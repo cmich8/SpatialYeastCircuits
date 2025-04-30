@@ -21,7 +21,7 @@ def implement_xor_gate():
     strain_library = create_strain_library()
     
     # Create the model with a 60x60 grid, with 0.1mm spacing
-    model = SpatialMultiStrainModel(grid_size=(60, 60), dx=0.1)
+    model = SpatialMultiStrainModel(grid_size=(60, 60), dx=3)
     
     # Set diffusion coefficients (mm²/hour)
     model.set_diffusion_coefficient(ALPHA, 0.15)  # Alpha factor
@@ -56,22 +56,22 @@ def implement_xor_gate():
     # Place strains in specific locations to create the XOR gate layout
     
     # Input A - left side
-    model.place_strain(0, row=30, col=10, radius=5, concentration=10.0)
+    model.place_strain(0, row=30, col=10, radius=3, concentration=10.0)
     
     # Input B - right side
-    model.place_strain(1, row=30, col=50, radius=5, concentration=10.0)
+    model.place_strain(1, row=30, col=50, radius=3, concentration=10.0)
     
     # Processing A: alpha -> IAA, place in middle-left
-    model.place_strain(2, row=20, col=25, radius=5, concentration=15.0)
+    model.place_strain(2, row=20, col=25, radius=3, concentration=15.0)
     
     # Processing B: IAA -> alpha, place in middle-right
-    model.place_strain(3, row=40, col=25, radius=5, concentration=15.0)
+    model.place_strain(3, row=40, col=25, radius=3, concentration=15.0)
     
     # Alpha reporter, place at bottom center
-    model.place_strain(4, row=45, col=30, radius=5, concentration=10.0)
+    model.place_strain(4, row=45, col=30, radius=3, concentration=10.0)
     
     # Auxin reporter, place at top center
-    model.place_strain(5, row=15, col=30, radius=5, concentration=10.0)
+    model.place_strain(5, row=15, col=30, radius=3, concentration=10.0)
     
     # Define four test scenarios for XOR gate
     scenarios = [
@@ -101,7 +101,7 @@ def implement_xor_gate():
         model.set_simulation_time(0, 10)
         
         # Run simulation
-        scenario_results = model.simulate(n_time_points=40, competition=True)
+        scenario_results = model.simulate(n_time_points=10, competition=True)
         results.append(scenario_results)
         
         # Plot results
@@ -238,6 +238,7 @@ def analyze_xor_gate_performance(model, results):
     
     plt.tight_layout()
     plt.show()
+    plt.savefig('xor_gate_attempt1.png')
 
 if __name__ == "__main__":
     # Run the XOR gate implementation

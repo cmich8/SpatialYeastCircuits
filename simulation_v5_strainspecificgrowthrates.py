@@ -640,291 +640,159 @@ class SpatialMultiStrainModel:
         
         return results
 
-def example_strain_competition():
-    """
-    Example demonstrating competition between strains with different growth parameters.
-    
-    This example places multiple strains in overlapping spatial regions to observe how
-    strains with different growth parameters compete for the shared carrying capacity.
-    """
-    strain_library = create_strain_library()
-    
-    # Create model
-    model = SpatialMultiStrainModel(grid_size=(50, 50), dx=0.1)
-    
-    # Set simulation time to capture lag phases and complete growth dynamics
-    model.set_simulation_time(0, 36)
-    
-    # Select strains with different growth characteristics
-    # Order by growth rate (r) from highest to lowest
-    fast_strain = strain_library['alpha->alpha']    # r ≈ 2.49
-    medium_strain = strain_library['beta->alpha']   # r ≈ 1.59 
-    slow_strain = strain_library['IAA->GFP']        # r ≈ 0.43
-    
-    # Add strains to the model
-    model.add_strain(fast_strain)    # Strain index 0
-    model.add_strain(medium_strain)  # Strain index 1
-    model.add_strain(slow_strain)    # Strain index 2
-    
-    # Create three regions:
-    # 1. Region with only fast strain
-    # 2. Region with medium and slow strains
-    # 3. Region with all three strains competing
-    
-    # Region 1: Only fast strain (top left)
-    model.place_strain(0, row=10, col=10, radius=7, concentration=1.0)
-    
-    # Region 2: Medium and slow strains (top right)
-    model.place_strain(1, row=10, col=40, radius=7, concentration=1.0)
-    model.place_strain(2, row=10, col=40, radius=7, concentration=1.0)
-    
-    # Region 3: All three strains (bottom center)
-    model.place_strain(0, row=35, col=25, radius=7, concentration=1.0)
-    model.place_strain(1, row=35, col=25, radius=7, concentration=1.0)
-    model.place_strain(2, row=35, col=25, radius=7, concentration=1.0)
-    
-    # Add initial molecule concentrations to trigger behaviors
-    model.place_molecule(ALPHA, row=10, col=10, radius=9, concentration=100.0)  # Region 1
-    model.place_molecule(BETA, row=10, col=40, radius=9, concentration=50.0)    # Region 2
-    model.place_molecule(IAA, row=10, col=40, radius=9, concentration=1000.0)   # Region 2
-    
-    # Molecules for region 3 (all strains)
-    model.place_molecule(ALPHA, row=35, col=25, radius=9, concentration=100.0)
-    model.place_molecule(BETA, row=35, col=25, radius=9, concentration=50.0)
-    model.place_molecule(IAA, row=35, col=25, radius=9, concentration=1000.0)
-    
-    # Run simulation
-    results = model.simulate(n_time_points=120)
-    
-    # Create visualization of the competition dynamics
-    # Sample times to observe competition at different stages
-    time_indices = [0, 30, 60, 90, 119]  # Beginning, 25%, 50%, 75%, end
-    
-    for time_idx in time_indices:
+    def create_animation(self, results: Dict, molecule: str = None, strain_idx: int = None, 
+                        time_indices: List[int] = None, interval: int = 200, cmap: str = 'viridis',
+                        vmin: float = None, vmax: float = None):
+        """
+        Create an animation of a molecule or strain population over time.
+        
+        Args:
+            results: Simulation results from the simulate method
+            molecule: Name of molecule to animate (if None, use strain_idx)
+            strain_idx: Index of strain to animate (if None, use molecule)
+            time_indices: List of time indices to animate (if None, use all)
+            interval: Time between frames in milliseconds
+            cmap: Colormap to use
+            vmin, vmax: Min and max values for colormap
+
+        Returns:
+            matplotlib.animation.FuncAnimation object
+        """
+        if molecule is None and strain_idx is None:
+            raise ValueError("Either molecule or strain_idx must be specified")
+        
+        # Get time points
+        t = results['t']
+        
+        if time_indices is None:
+            time_indices = range(len(t))
+        
+        # Create figure and axes
+        fig, ax = plt.subplots(figsize=(8, 8))
+        
+        # Set up initial plot
+        if molecule is not None:
+            data = results['molecule_grids'][molecule]
+            title = f"{molecule} - t = {t[0]:.2f} h"
+        else:
+            data = results['population_grids'][strain_idx]
+            title = f"{self.strains[strain_idx].strain_id} Population - t = {t[0]:.2f} h"
+        
+        # Determine vmin and vmax if not provided
+        if vmin is None:
+            vmin = min(np.min(data[idx]) for idx in time_indices)
+        if vmax is None:
+            vmax = max(np.max(data[idx]) for idx in time_indices)
+        
+        # Create the initial plot
+        im = ax.imshow(data[time_indices[0]], cmap=cmap, interpolation='nearest',
+                     vmin=vmin, vmax=vmax)
+        
+        # Add colorbar
+        plt.colorbar(im, ax=ax)
+        
+        # Set title and labels
+        ax.set_title(title)
+        ax.set_xlabel("X")
+        ax.set_ylabel("Y")
+        
+        # Animation update function
+        def update(frame):
+            idx = time_indices[frame]
+            im.set_data(data[idx])
+            
+            if molecule is not None:
+                ax.set_title(f"{molecule} - t = {t[idx]:.2f} h")
+            else:
+                ax.set_title(f"{self.strains[strain_idx].strain_id} Population - t = {t[idx]:.2f} h")
+            
+            return [im]
+        
+        # Create animation
+        anim = animation.FuncAnimation(fig, update, frames=len(time_indices),
+                                      interval=interval, blit=True)
+        
+        plt.tight_layout()
+        return anim
+
+    def plot_spatial_results(self, results: Dict, time_idx: int = -1, 
+                           molecules: List[str] = None, figsize: Tuple[int, int] = (15, 10)):
+        """
+        Plot spatial results at a specific time point.
+        
+        Args:
+            results: Simulation results from the simulate method
+            time_idx: Time index to plot (default: last time point)
+            molecules: List of molecules to plot (default: all)
+            figsize: Figure size (width, height) in inches
+        """
+        if molecules is None:
+            molecules = list(results['molecule_grids'].keys())
+        
+        n_molecules = len(molecules)
+        n_strains = len(self.strains)
+        
+        # Calculate grid layout
+        n_plots = n_molecules + n_strains
+        n_cols = min(4, n_plots)
+        n_rows = (n_plots + n_cols - 1) // n_cols
+        
+        # Create figure and axes
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize)
+        if n_rows * n_cols == 1:
+            axes = np.array([[axes]])
+        elif n_rows == 1 or n_cols == 1:
+            axes = axes.reshape(n_rows, n_cols)
+        
+        # Get time point
         time_point = results['t'][time_idx]
-        print(f"Plotting competition results at t = {time_point:.2f} hours")
         
-        # Create figure
-        fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+        # Plot molecule grids
+        for i, molecule in enumerate(molecules):
+            row, col = i // n_cols, i % n_cols
+            ax = axes[row, col]
+            
+            grid = results['molecule_grids'][molecule][time_idx]
+            
+            # Create heatmap
+            im = ax.imshow(grid, cmap='viridis', interpolation='nearest')
+            
+            # Add colorbar
+            plt.colorbar(im, ax=ax)
+            
+            # Set title
+            ax.set_title(f"{molecule} (t = {time_point:.2f} h)")
+            ax.set_xlabel("X")
+            ax.set_ylabel("Y")
         
-        # Plot each strain
-        for strain_idx in range(3):
-            strain = model.strains[strain_idx]
-            pop_grid = results['population_grids'][strain_idx][time_idx]
+        # Plot strain population grids
+        for i, strain in enumerate(self.strains):
+            row, col = (i + n_molecules) // n_cols, (i + n_molecules) % n_cols
+            ax = axes[row, col]
             
-            # Plot on shared axes
-            im = axes[strain_idx].imshow(pop_grid, cmap='viridis', vmin=0, vmax=model.strains[strain_idx].k,
-                                        interpolation='nearest')
+            grid = results['population_grids'][i][time_idx]
             
-            plt.colorbar(im, ax=axes[strain_idx])
+            # Create heatmap
+            im = ax.imshow(grid, cmap='plasma', interpolation='nearest')
             
-            # Add title with growth parameters
-            axes[strain_idx].set_title(f"{strain.strain_id}\n" + 
-                                      f"r = {strain.r:.2f}, lag = {strain.lag:.2f}h")
-            axes[strain_idx].set_xlabel("X")
-            axes[strain_idx].set_ylabel("Y")
+            # Add colorbar
+            plt.colorbar(im, ax=ax)
+            
+            # Set title
+            ax.set_title(f"{strain.strain_id} Population (t = {time_point:.2f} h)")
+            ax.set_xlabel("X")
+            ax.set_ylabel("Y")
         
-        fig.suptitle(f"Competition at t = {time_point:.2f} hours", fontsize=16)
+        # Hide unused subplots
+        for i in range(n_plots, n_rows * n_cols):
+            row, col = i // n_cols, i % n_cols
+            axes[row, col].axis('off')
+        
         plt.tight_layout()
         plt.show()
-    
-    # Create plots showing competition dynamics over time
-    # Define three regions to track
-    regions = [
-        (slice(5, 15), slice(5, 15)),      # Region 1: top left
-        (slice(5, 15), slice(35, 45)),     # Region 2: top right
-        (slice(30, 40), slice(20, 30))     # Region 3: bottom center
-    ]
-    region_names = ["Region 1 (Fast only)", "Region 2 (Medium & Slow)", "Region 3 (All strains)"]
-    
-    # Create figure for growth curves in the different regions
-    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
-    
-    for region_idx, (region_slice, region_name) in enumerate(zip(regions, region_names)):
-        ax = axes[region_idx]
-        
-        # Plot each strain's average population in this region
-        for strain_idx in range(3):
-            strain = model.strains[strain_idx]
-            populations = results['population_grids'][strain_idx]
-            
-            # Calculate average population in this region over time
-            avg_pop = [np.mean(pop[region_slice]) for pop in populations]
-            
-            # Plot the strain growth curve
-            ax.plot(results['t'], avg_pop, 
-                    label=f"{strain.strain_id} (r={strain.r:.2f})", 
-                    linewidth=2)
-        
-        # Add vertical lines for lag phases
-        for strain_idx, strain in enumerate(model.strains[:3]):
-            ax.axvline(x=strain.lag, color=f'C{strain_idx}', linestyle='--', alpha=0.5)
-        
-        # Calculate and plot total population
-        total_pop = np.zeros_like(results['t'])
-        for strain_idx in range(3):
-            populations = results['population_grids'][strain_idx]
-            for t_idx, pop in enumerate(populations):
-                total_pop[t_idx] += np.mean(pop[region_slice])
-        
-        ax.plot(results['t'], total_pop, 'k--', label="Total population", linewidth=1.5)
-        
-        # Add carrying capacity reference line
-        ax.axhline(y=model.strains[0].k, color='gray', linestyle=':', 
-                  label=f"Carrying capacity (k={model.strains[0].k:.1f})")
-        
-        # Customize plot
-        ax.grid(True, alpha=0.3)
-        ax.set_xlabel('Time (hours)', fontsize=10)
-        ax.set_ylabel('Average Population Density', fontsize=10)
-        ax.set_title(f"{region_name}\nStrain Competition Dynamics", fontsize=12)
-        ax.legend(loc='upper right', fontsize=8)
-        
-        # Set y-axis limit a bit above carrying capacity
-        ax.set_ylim(0, model.strains[0].k * 1.1)
-    
-    plt.tight_layout()
-    plt.show()
-    
-    return results
+        return fig
 
-    # The visualization functions remain the same
-
-
-def create_strain_library():
-    """
-    Create a library of all strains from the paper with growth parameters.
-    
-    Returns:
-        Dictionary mapping strain IDs to StrainParameters objects
-    """
-    # Growth parameters dictionary
-    growth_params = {
-        'beta->alpha': {'k': 101.89883870394586, 'r': 1.5910963028004033, 'A': 2.2704007163391717e-08, 'lag': 8.122765202090607},
-        'alpha->venus': {'k': 101.89856092475966, 'r': 1.591129021157073, 'A': 2.2693810194718495e-08, 'lag': 8.122769309094306},
-        'alpha->alpha': {'k': 100.0911089941252, 'r': 2.491985116331938, 'A': 1.0520282725483878e-09, 'lag': 7.695291121111312},
-        'alpha->IAA': {'k': 100.18163801781024, 'r': 1.784158848520821, 'A': 5.434662380597071e-09, 'lag': 7.983240474337439},
-        'beta->IAA': {'k': 100.05637394521705, 'r': 2.4267020233248986, 'A': 4.400807476684393e-09, 'lag': 8.128368528029435},
-        'IAA->GFP': {'k': 102.52637659915042, 'r': 0.4254980744873518, 'A': 0.002833302911672342, 'lag': 8.024233468750994},
-        'IAA->IAA': {'k': 100.0689455692613, 'r': 0.9316534320715953, 'A': 8.204277164775148e-09, 'lag': 7.975381367685189},
-        'IAA->alpha': {'k': 156.60733118093165, 'r': 0.670893841196142, 'A': 3.4690886521760006e-08, 'lag': 10.126559816714993}
-    }
-    
-    strains = {}
-    
-    # 3. IAA->GFP (Auxin activating GFP)
-    strains['IAA->GFP'] = StrainParameters(
-        strain_id='IAA->GFP',
-        input_molecule=IAA,
-        regulation_type=ACTIVATION,
-        output_molecule=GFP,
-        k1=8.95e4, d1=0.082, k2=1.73e7, K=1.4e7, n=0.836,
-        d2=1.88e7, k3=3.15e4, d3=1.66e6, b=1.46e4,
-        k=growth_params['IAA->GFP']['k'],
-        r=growth_params['IAA->GFP']['r'],
-        A=growth_params['IAA->GFP']['A'],
-        lag=growth_params['IAA->GFP']['lag']
-    )
-
-    # 5. ALPHA->VENUS (Alpha activating VENUS)
-    strains['alpha->venus'] = StrainParameters(
-        strain_id='alpha->venus',
-        input_molecule=ALPHA,
-        regulation_type=ACTIVATION,
-        output_molecule=VENUS,
-        k1=1.06e3, d1=0.245, k2=3.47e5, K=7.08e5, n=1.04,
-        d2=1.56e5, k3=1.62e4, d3=2.15e6, b=5.96e3,
-        k=growth_params['alpha->venus']['k'],
-        r=growth_params['alpha->venus']['r'],
-        A=growth_params['alpha->venus']['A'],
-        lag=growth_params['alpha->venus']['lag']
-    )
-
-    # 12. beta->IAA (beta activating IAA)
-    strains['beta->IAA'] = StrainParameters(
-        strain_id='beta->IAA',
-        input_molecule=BETA,
-        regulation_type=ACTIVATION,
-        output_molecule=IAA,
-        k1=50.66, d1=25.86, k2=11, K=57.12, n=1.26,
-        d2=110.43, k3=3.48e3, d3=0.16, b=0.21,
-        k=growth_params['beta->IAA']['k'],
-        r=growth_params['beta->IAA']['r'],
-        A=growth_params['beta->IAA']['A'],
-        lag=growth_params['beta->IAA']['lag']
-    )
-    
-    # 13. beta->alpha (beta activating alpha)
-    strains['beta->alpha'] = StrainParameters(
-        strain_id='beta->alpha',
-        input_molecule=BETA,
-        regulation_type=ACTIVATION,
-        output_molecule=ALPHA,
-        k1=50.66, d1=25.86, k2=11, K=57.12, n=1.26,
-        d2=110.43, k3=121.6, d3=0.062, b=0.14,
-        k=growth_params['beta->alpha']['k'],
-        r=growth_params['beta->alpha']['r'],
-        A=growth_params['beta->alpha']['A'],
-        lag=growth_params['beta->alpha']['lag']
-    )
-
-    # ALPHA->IAA (Alpha activating IAA)
-    strains['alpha->IAA'] = StrainParameters(
-        strain_id='alpha->IAA',
-        input_molecule=ALPHA,
-        regulation_type=ACTIVATION,
-        output_molecule=IAA,
-        k1=1.06e3, d1=0.245, k2=3.47e5, K=7.08e5, n=1.04,
-        d2=1.56e5, k3=566.24, d3=0.575, b=55.83,
-        k=growth_params['alpha->IAA']['k'],
-        r=growth_params['alpha->IAA']['r'],
-        A=growth_params['alpha->IAA']['A'],
-        lag=growth_params['alpha->IAA']['lag']
-    )
-    
-    # ALPHA->ALPHA (Alpha activating ALPHA)
-    strains['alpha->alpha'] = StrainParameters(
-        strain_id='alpha->alpha',
-        input_molecule=ALPHA,
-        regulation_type=ACTIVATION,
-        output_molecule=ALPHA,
-        k1=1.06e3, d1=0.245, k2=3.47e5, K=7.08e5, n=1.04,
-        d2=1.56e5, k3=419.52, d3=2.1e4, b=2.32e4,
-        k=growth_params['alpha->alpha']['k'],
-        r=growth_params['alpha->alpha']['r'],
-        A=growth_params['alpha->alpha']['A'],
-        lag=growth_params['alpha->alpha']['lag']
-    )
-    
-    # IAA->alpha (Auxin activating alpha)
-    strains['IAA->alpha'] = StrainParameters(
-        strain_id='IAA->alpha',
-        input_molecule=IAA,
-        regulation_type=ACTIVATION,
-        output_molecule=ALPHA,
-        k1=8.95e4, d1=0.082, k2=1.73e7, K=1.4e7, n=0.836,
-        d2=1.88e7, k3=2.285, d3=0.28, b=0.74,
-        k=growth_params['IAA->alpha']['k'],
-        r=growth_params['IAA->alpha']['r'],
-        A=growth_params['IAA->alpha']['A'],
-        lag=growth_params['IAA->alpha']['lag']
-    )
-    
-    # IAA->IAA (Auxin activating IAA)
-    strains['IAA->IAA'] = StrainParameters(
-        strain_id='IAA->IAA',
-        input_molecule=IAA,
-        regulation_type=ACTIVATION,
-        output_molecule=IAA,
-        k1=8.95e4, d1=0.082, k2=1.73e7, K=1.4e7, n=0.836,
-        d2=1.88e7, k3=775.05, d3=0.84, b=780.90,
-        k=growth_params['IAA->IAA']['k'],
-        r=growth_params['IAA->IAA']['r'],
-        A=growth_params['IAA->IAA']['A'],
-        lag=growth_params['IAA->IAA']['lag']
-    )
-
-def plot_strain_growth(results, model, figsize=(12, 8), average_over_space=True, specific_locations=None):
+def plot_strain_growth(results, model, figsize=(12, 8), outputdir = None, average_over_space=True, specific_locations=None):
     """
     Plot the growth of each strain over time from simulation results.
     
@@ -1014,7 +882,6 @@ def plot_strain_growth(results, model, figsize=(12, 8), average_over_space=True,
     # Adjust layout to make room for the legend
     plt.tight_layout()
     plt.subplots_adjust(right=0.78)
-    
     return fig
 
 # Example usage:
@@ -1192,3 +1059,160 @@ def create_growth_dashboard(results, model, time_points=None, figsize=(15, 12)):
     
     plt.tight_layout()
     return fig
+
+def create_strain_library():
+        """
+        Create a library of all strains from the paper with growth parameters.
+        
+        Returns:
+            Dictionary mapping strain IDs to StrainParameters objects
+        """
+        # Growth parameters dictionary
+        growth_params = {
+            'beta->alpha': {'strain': 'beta->alpha','k': 10.156865998540457,'r': 1.3877019835236286,'A': 3.811240700492937e-08,'lag': 8.065932810614516,'doubling_time': 0.4994928225150461,'r_squared': 0.9978592780369944},
+            'alpha->venus': {'strain': 'alpha->venus','k': 10.156881939374474,'r': 1.3876456633006105,'A': 3.814254538133409e-08,'lag': 8.06591253743179,'doubling_time': 0.4995130953756935,'r_squared': 0.9978586598580573},
+            'alpha->alpha': {'strain': 'alpha->alpha','k': 10.030632161041991,'r': 2.0645209329326293,'A': 1.0705887173990125e-08,'lag': 7.994289828061679,'doubling_time': 0.33574238434838116,'r_squared': 0.9999048003122031},
+            'alpha->IAA': {'strain': 'alpha->IAA','k': 10.040333303759686,'r': 1.577804152831291,'A': 6.43804253236298e-09,'lag': 7.973971461454354,'doubling_time': 0.4393112917823972,'r_squared': 0.9999163020148677},
+            'beta->IAA': {'strain': 'beta->IAA',
+                'k': 10.040307128578494,
+                'r': 1.9629605025697323,
+                'A': 4.000104513358863e-08,
+                'lag': 8.156733057057686,
+                'doubling_time': 0.35311315721968883,
+                'r_squared': 0.999744136703164},
+            'IAA->GFP': {'strain': 'IAA->GFP',
+                'k': 10.252654230445089,
+                'r': 0.42549511085479685,
+                'A': 0.0002582042194400119,
+                'lag': 7.805876037701137,
+                'doubling_time': 1.6290367688772023,
+                'r_squared': 0.9955579879121793},
+            'IAA->IAA': {'strain': 'IAA->IAA',
+                'k': 10.009222723768396,
+                'r': 0.9071483893517285,
+                'A': 1.338045537808413e-09,
+                'lag': 7.970174930108886,
+                'doubling_time': 0.7640945943312384,
+                'r_squared': 0.9999395888033465},
+            'IAA->alpha': {'strain': 'IAA->alpha',
+                'k': 15.947503133990207,
+                'r': 0.6144061444836784,
+                'A': 2.082679648386623e-08,
+                'lag': 10.04798809953061,
+                'doubling_time': 1.1281579567249245,
+                'r_squared': 0.9904120220822631}}
+                    
+        strains = {}
+        
+        # 3. IAA->GFP (Auxin activating GFP)
+        strains['IAA->GFP'] = StrainParameters(
+            strain_id='IAA->GFP',
+            input_molecule=IAA,
+            regulation_type=ACTIVATION,
+            output_molecule=GFP,
+            k1=8.95e4, d1=0.082, k2=1.73e7, K=1.4e7, n=0.836,
+            d2=1.88e7, k3=3.15e4, d3=1.66e6, b=1.46e4,
+            k=growth_params['IAA->GFP']['k'],
+            r=growth_params['IAA->GFP']['r'],
+            A=growth_params['IAA->GFP']['A'],
+            lag=growth_params['IAA->GFP']['lag']
+        )
+
+        # 5. ALPHA->VENUS (Alpha activating VENUS)
+        strains['alpha->venus'] = StrainParameters(
+            strain_id='alpha->venus',
+            input_molecule=ALPHA,
+            regulation_type=ACTIVATION,
+            output_molecule=VENUS,
+            k1=1.06e3, d1=0.245, k2=3.47e5, K=7.08e5, n=1.04,
+            d2=1.56e5, k3=1.62e4, d3=2.15e6, b=5.96e3,
+            k=growth_params['alpha->venus']['k'],
+            r=growth_params['alpha->venus']['r'],
+            A=growth_params['alpha->venus']['A'],
+            lag=growth_params['alpha->venus']['lag']
+        )
+
+        # 12. beta->IAA (beta activating IAA)
+        strains['beta->IAA'] = StrainParameters(
+            strain_id='beta->IAA',
+            input_molecule=BETA,
+            regulation_type=ACTIVATION,
+            output_molecule=IAA,
+            k1=50.66, d1=25.86, k2=11, K=57.12, n=1.26,
+            d2=110.43, k3=3.48e3, d3=0.16, b=0.21,
+            k=growth_params['beta->IAA']['k'],
+            r=growth_params['beta->IAA']['r'],
+            A=growth_params['beta->IAA']['A'],
+            lag=growth_params['beta->IAA']['lag']
+        )
+        
+        # 13. beta->alpha (beta activating alpha)
+        strains['beta->alpha'] = StrainParameters(
+            strain_id='beta->alpha',
+            input_molecule=BETA,
+            regulation_type=ACTIVATION,
+            output_molecule=ALPHA,
+            k1=50.66, d1=25.86, k2=11, K=57.12, n=1.26,
+            d2=110.43, k3=121.6, d3=0.062, b=0.14,
+            k=growth_params['beta->alpha']['k'],
+            r=growth_params['beta->alpha']['r'],
+            A=growth_params['beta->alpha']['A'],
+            lag=growth_params['beta->alpha']['lag']
+        )
+
+        # ALPHA->IAA (Alpha activating IAA)
+        strains['alpha->IAA'] = StrainParameters(
+            strain_id='alpha->IAA',
+            input_molecule=ALPHA,
+            regulation_type=ACTIVATION,
+            output_molecule=IAA,
+            k1=1.06e3, d1=0.245, k2=3.47e5, K=7.08e5, n=1.04,
+            d2=1.56e5, k3=566.24, d3=0.575, b=55.83,
+            k=growth_params['alpha->IAA']['k'],
+            r=growth_params['alpha->IAA']['r'],
+            A=growth_params['alpha->IAA']['A'],
+            lag=growth_params['alpha->IAA']['lag']
+        )
+        
+        # ALPHA->ALPHA (Alpha activating ALPHA)
+        strains['alpha->alpha'] = StrainParameters(
+            strain_id='alpha->alpha',
+            input_molecule=ALPHA,
+            regulation_type=ACTIVATION,
+            output_molecule=ALPHA,
+            k1=1.06e3, d1=0.245, k2=3.47e5, K=7.08e5, n=1.04,
+            d2=1.56e5, k3=419.52, d3=2.1e4, b=2.32e4,
+            k=growth_params['alpha->alpha']['k'],
+            r=growth_params['alpha->alpha']['r'],
+            A=growth_params['alpha->alpha']['A'],
+            lag=growth_params['alpha->alpha']['lag']
+        )
+        
+        # IAA->alpha (Auxin activating alpha)
+        strains['IAA->alpha'] = StrainParameters(
+            strain_id='IAA->alpha',
+            input_molecule=IAA,
+            regulation_type=ACTIVATION,
+            output_molecule=ALPHA,
+            k1=8.95e4, d1=0.082, k2=1.73e7, K=1.4e7, n=0.836,
+            d2=1.88e7, k3=2.285, d3=0.28, b=0.74,
+            k=growth_params['IAA->alpha']['k'],
+            r=growth_params['IAA->alpha']['r'],
+            A=growth_params['IAA->alpha']['A'],
+            lag=growth_params['IAA->alpha']['lag']
+        )
+        
+        # IAA->IAA (Auxin activating IAA)
+        strains['IAA->IAA'] = StrainParameters(
+            strain_id='IAA->IAA',
+            input_molecule=IAA,
+            regulation_type=ACTIVATION,
+            output_molecule=IAA,
+            k1=8.95e4, d1=0.082, k2=1.73e7, K=1.4e7, n=0.836,
+            d2=1.88e7, k3=775.05, d3=0.84, b=780.90,
+            k=growth_params['IAA->IAA']['k'],
+            r=growth_params['IAA->IAA']['r'],
+            A=growth_params['IAA->IAA']['A'],
+            lag=growth_params['IAA->IAA']['lag']
+        )
+        return strains
