@@ -110,44 +110,112 @@ class SpatialMultiStrainModel:
         
         return self
     
-    def place_strain(self, strain_idx: int, row: int, col: int, radius: int, concentration: float):
+    def place_strain(self, strain_idx: int, row: int, col: int, shape: str = "circle", 
+                   radius: int = None, width: int = None, height: int = None, 
+                   concentration: float = 1.0):
         """
-        Place a circular colony of a strain at a specific location.
+        Place a colony of a strain at a specific location with specified shape.
         
         Args:
             strain_idx: Index of the strain to place
             row, col: Center coordinates of the colony
-            radius: Radius of the colony
+            shape: Shape of the colony ("circle" or "rectangle")
+            radius: Radius of the colony (for circular shape)
+            width: Width of the colony (for rectangular shape)
+            height: Height of the colony (for rectangular shape)
             concentration: Concentration/population of the strain
         """
         if strain_idx < 0 or strain_idx >= len(self.strains):
             raise ValueError(f"Invalid strain index: {strain_idx}")
         
-        # Create a circular colony
-        y, x = np.ogrid[-row:self.grid_size[0]-row, -col:self.grid_size[1]-col]
-        mask = x*x + y*y <= radius*radius
+        # Validate shape parameter
+        shape = shape.lower()
+        if shape not in ["circle", "rectangle"]:
+            raise ValueError(f"Invalid shape: {shape}. Must be 'circle' or 'rectangle'")
+        
+        # Create mask based on shape
+        if shape == "circle":
+            if radius is None:
+                raise ValueError("Radius must be specified for circular shape")
+            
+            # Create a circular colony
+            y, x = np.ogrid[-row:self.grid_size[0]-row, -col:self.grid_size[1]-col]
+            mask = x*x + y*y <= radius*radius
+            
+        elif shape == "rectangle":
+            if width is None or height is None:
+                raise ValueError("Width and height must be specified for rectangular shape")
+            
+            # Create a rectangular colony
+            # Calculate rectangle boundaries
+            half_width = width // 2
+            half_height = height // 2
+            
+            # Define rectangle coordinates
+            min_row = max(0, row - half_height)
+            max_row = min(self.grid_size[0], row + half_height)
+            min_col = max(0, col - half_width)
+            max_col = min(self.grid_size[1], col + half_width)
+            
+            # Create mask
+            mask = np.zeros(self.grid_size, dtype=bool)
+            mask[min_row:max_row, min_col:max_col] = True
         
         # Place the colony on the grid
         self.strain_grids[strain_idx][mask] = concentration
         
         return self
     
-    def place_molecule(self, molecule: str, row: int, col: int, radius: int, concentration: float):
+    def place_molecule(self, molecule: str, row: int, col: int, shape: str = "circle", 
+                     radius: int = None, width: int = None, height: int = None, 
+                     concentration: float = 1.0):
         """
-        Place a circular region of a molecule at a specific location.
+        Place a region of a molecule at a specific location with specified shape.
         
         Args:
             molecule: Name of the molecule
             row, col: Center coordinates of the region
-            radius: Radius of the region
+            shape: Shape of the region ("circle" or "rectangle")
+            radius: Radius of the region (for circular shape)
+            width: Width of the region (for rectangular shape)
+            height: Height of the region (for rectangular shape)
             concentration: Concentration of the molecule
         """
         if molecule not in self.initial_molecule_grids:
             raise ValueError(f"Unknown molecule: {molecule}")
         
-        # Create a circular region
-        y, x = np.ogrid[-row:self.grid_size[0]-row, -col:self.grid_size[1]-col]
-        mask = x*x + y*y <= radius*radius
+        # Validate shape parameter
+        shape = shape.lower()
+        if shape not in ["circle", "rectangle"]:
+            raise ValueError(f"Invalid shape: {shape}. Must be 'circle' or 'rectangle'")
+        
+        # Create mask based on shape
+        if shape == "circle":
+            if radius is None:
+                raise ValueError("Radius must be specified for circular shape")
+            
+            # Create a circular region
+            y, x = np.ogrid[-row:self.grid_size[0]-row, -col:self.grid_size[1]-col]
+            mask = x*x + y*y <= radius*radius
+            
+        elif shape == "rectangle":
+            if width is None or height is None:
+                raise ValueError("Width and height must be specified for rectangular shape")
+            
+            # Create a rectangular region
+            # Calculate rectangle boundaries
+            half_width = width // 2
+            half_height = height // 2
+            
+            # Define rectangle coordinates
+            min_row = max(0, row - half_height)
+            max_row = min(self.grid_size[0], row + half_height)
+            min_col = max(0, col - half_width)
+            max_col = min(self.grid_size[1], col + half_width)
+            
+            # Create mask
+            mask = np.zeros(self.grid_size, dtype=bool)
+            mask[min_row:max_row, min_col:max_col] = True
         
         # Place the molecule on the grid
         self.initial_molecule_grids[molecule][mask] = concentration
