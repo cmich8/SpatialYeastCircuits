@@ -12,8 +12,8 @@ def run_wellmixed_experiment(
     grid_size=(20, 20),
     dx=0.5,
     coarse_factor=5,
-    simulation_time=(0, 24),
-    n_time_points=10,
+    simulation_time=(0,96),
+    n_time_points=48,
     output_dir="./wellmixed_v2_results"
 ):
     """
@@ -272,7 +272,6 @@ def plot_molecule_concentrations(results, molecules=None):
     ax.set_title('Molecule Concentrations Over Time', fontsize=14)
     ax.grid(True, alpha=0.3)
     ax.legend()
-    
     plt.tight_layout()
     return fig
 
@@ -280,34 +279,34 @@ def plot_molecule_concentrations(results, molecules=None):
 if __name__ == "__main__":
     # Example 1: Simple two-strain system
     model1, results1, figures1 = run_wellmixed_experiment(
-        strains_to_include=['beta->alpha', 'alpha->venus'],
-        strain_concentrations=[0.01, 0.01],
-        molecules={BETA: 10.0},
-        grid_size=(30, 30),
-        coarse_factor=5,
+        strains_to_include=['beta->alpha'],
+        strain_concentrations=[0.1],
+        molecules={BETA: 100.0},
+        grid_size=(50, 50),
+        coarse_factor=2,
         output_dir="./example1_results"
     )
     
     # Example 2: Three-strain relay circuit
-    model2, results2, figures2 = run_wellmixed_experiment(
-        strains_to_include=['beta->alpha', 'alpha->IAA', 'IAA->GFP'],
-        strain_concentrations=[0.01, 0.01, 0.01],
-        molecules={BETA: 10.0},
-        grid_size=(30, 30),
-        coarse_factor=5,
-        output_dir="./example2_results"
-    )
+    #model2, results2, figures2 = run_wellmixed_experiment(
+    #    strains_to_include=['beta->alpha', 'alpha->IAA', 'IAA->GFP'],
+    #    strain_concentrations=[0.1, 0.1, 0.1],
+    #    molecules={BETA: 100.0},
+    #    grid_size=(50,50),
+    #    coarse_factor=2,
+    #    output_dir="./example2_results"
+    #)
     
     # Example 3: Varying beta-estradiol concentrations
-    for beta_conc in [1.0, 5.0, 10.0]:
-        output_dir = f"./beta_{beta_conc}_results"
-        model3, results3, figures3 = run_wellmixed_experiment(
-            strains_to_include=['beta->alpha', 'alpha->venus'],
-            strain_concentrations=[0.01, 0.01],
-            molecules={BETA: beta_conc},
-            grid_size=(20, 20),
-            coarse_factor=4,
-            output_dir=output_dir
-        )
+    #for beta_conc in [10, 100, 1000]:
+    #    output_dir = f"./beta_{beta_conc}_results"
+    #    model3, results3, figures3 = run_wellmixed_experiment(
+    #        strains_to_include=['beta->alpha', 'alpha->venus'],
+    #        strain_concentrations=[0.1, 0.1],
+    #        molecules={BETA: beta_conc},
+    ##        grid_size=(50, 50),
+    #        coarse_factor=1,
+    #        output_dir=output_dir
+    #    )
     
     print("All experiments completed!")
