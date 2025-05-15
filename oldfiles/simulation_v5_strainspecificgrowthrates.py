@@ -1,6 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
+from scipy import ndimage
 from dataclasses import dataclass
 from typing import List, Dict, Tuple, Optional, Union, Callable
 import time
@@ -64,20 +65,27 @@ class StrainParameters:
 class SpatialMultiStrainModel:
     """Model for simulating multiple interacting yeast strains with spatial dynamics."""
     
-    def __init__(self, grid_size=(50, 50), dx=0.1):
+    def __init__(self, grid_size=(50, 50), dx=0.1, coarse_factor=1):
         """
         Initialize the spatial model.
         
         Args:
             grid_size: Tuple of (height, width) for the 2D grid
             dx: Grid spacing (in mm)
+            coarse_factor: Factor to coarsen the grid (1 = original resolution)
         """
-        self.grid_size = grid_size
-        self.dx = dx
+        if coarse_factor > 1:
+            # Calculate new grid size after coarsening
+            self.grid_size = (grid_size[0] // coarse_factor, grid_size[1] // coarse_factor)
+            self.dx = dx * coarse_factor  # Adjust spatial step size
+        else:
+            self.grid_size = grid_size
+            self.dx = dx
+            
         self.strains = []
         self.initial_molecule_grids = {}
-        self.strain_grids = []  # List of initial population grids for each strain
-        self.time_span = (0, 10)  # Default simulation time (hours)
+        self.strain_grids = []
+        self.time_span = (0, 10)
         
         # Diffusion coefficients (mm²/hour)
         self.diffusion_coefficients = {
@@ -248,6 +256,290 @@ class SpatialMultiStrainModel:
         self.time_span = (t_start, t_end)
         return self
     
+    def _build_optimized_spatial_ode_system(self) -> Callable:
+        """
+        Build an optimized spatial ODE system for the model with competition between strains.
+        Uses scipy.ndimage for faster diffusion and focuses computation on active regions.
+        
+        Returns:
+            Function that computes the derivatives for the state variables
+        """
+        # Grid dimensions
+        grid_height, grid_width = self.grid_size
+        
+        # Number of diffusible molecules
+        diffusible_molecules = [ALPHA, IAA, BETA, BAR1, GH3]
+        n_diffusible = len(diffusible_molecules)
+        
+        # Number of fluorescent reporter molecules
+        reporter_molecules = [GFP, VENUS]
+        n_reporters = len(reporter_molecules)
+        
+        # Number of state variables per grid cell for each strain
+        n_internal_states = 3
+        
+        # Diffusion coefficient for each molecule
+        D_values = [self.diffusion_coefficients.get(molecule, 0.0) for molecule in diffusible_molecules]
+        
+        # Create index mappings for molecules
+        diffusible_indices = {molecule: i for i, molecule in enumerate(diffusible_molecules)}
+        reporter_indices = {molecule: i for i, molecule in enumerate(reporter_molecules)}
+        
+        # Extract growth parameters for each strain
+        strain_growth_params = []
+        for strain in self.strains:
+            strain_growth_params.append({
+                'k': strain.k,
+                'r': strain.r,
+                'A': strain.A,
+                'lag': strain.lag
+            })
+        
+        # Calculate the total number of state variables
+        n_states = (n_diffusible + n_reporters) * grid_height * grid_width  # Molecule grids
+        n_states += len(self.strains) * (grid_height * grid_width + n_internal_states * grid_height * grid_width)  # Strain grids + internal states
+        
+        # Threshold for determining active regions
+        activity_threshold = 0.005  # Regions with > 0.5% of max will be considered active
+        
+        def dydt(t, y):
+            """
+            Compute derivatives for all state variables - optimized version.
+            """
+            # Initialize derivatives array
+            derivatives = np.zeros_like(y)
+            
+            # Reshape the state array to get the molecule and strain grids
+            # First, extract the diffusible molecule grids
+            diffusible_grids = []
+            state_idx = 0
+            for i in range(n_diffusible):
+                grid = y[state_idx:state_idx + grid_height*grid_width].reshape(grid_height, grid_width)
+                diffusible_grids.append(grid)
+                state_idx += grid_height*grid_width
+            
+            # Extract reporter molecule grids
+            reporter_grids = []
+            for i in range(n_reporters):
+                grid = y[state_idx:state_idx + grid_height*grid_width].reshape(grid_height, grid_width)
+                reporter_grids.append(grid)
+                state_idx += grid_height*grid_width
+            
+            # Extract strain population grids and internal state grids
+            strain_pop_grids = []
+            strain_internal_states = []
+            
+            for strain_idx in range(len(self.strains)):
+                # Extract population grid
+                pop_grid = y[state_idx:state_idx + grid_height*grid_width].reshape(grid_height, grid_width)
+                strain_pop_grids.append(pop_grid)
+                state_idx += grid_height*grid_width
+                
+                # Extract internal state grids (3 per strain)
+                strain_states = []
+                for j in range(n_internal_states):
+                    state_grid = y[state_idx:state_idx + grid_height*grid_width].reshape(grid_height, grid_width)
+                    strain_states.append(state_grid)
+                    state_idx += grid_height*grid_width
+                
+                strain_internal_states.append(strain_states)
+            
+            # Calculate total population
+            total_population = np.zeros((grid_height, grid_width))
+            for pop_grid in strain_pop_grids:
+                total_population += pop_grid
+                
+            # Identify active regions to optimize computation
+            active_mask = np.zeros((grid_height, grid_width), dtype=bool)
+            
+            # Regions with significant strain population or signaling molecules are active
+            for pop_grid in strain_pop_grids:
+                if np.max(pop_grid) > 0:
+                    active_mask |= (pop_grid > activity_threshold * np.max(pop_grid))
+            
+            for mol_grid in diffusible_grids:
+                if np.max(mol_grid) > 0:
+                    active_mask |= (mol_grid > activity_threshold * np.max(mol_grid))
+            
+            # Dilate the active mask to include neighboring cells
+            active_mask = ndimage.binary_dilation(active_mask, iterations=2)
+            
+            # Calculate diffusion for each diffusible molecule - OPTIMIZED VERSION
+            for mol_idx, D in enumerate(D_values):
+                if D > 0:  # Only apply diffusion if coefficient is positive
+                    grid = diffusible_grids[mol_idx]
+                    
+                    # Use scipy.ndimage.laplace for diffusion calculation
+                    laplacian = ndimage.laplace(grid) / (self.dx**2)
+                    
+                    # Apply no-flux boundary conditions
+                    # Top and bottom boundaries
+                    laplacian[0, 1:-1] = (grid[1, 1:-1] - grid[0, 1:-1]) / (self.dx**2)
+                    laplacian[-1, 1:-1] = (grid[-2, 1:-1] - grid[-1, 1:-1]) / (self.dx**2)
+                    
+                    # Left and right boundaries
+                    laplacian[1:-1, 0] = (grid[1:-1, 1] - grid[1:-1, 0]) / (self.dx**2)
+                    laplacian[1:-1, -1] = (grid[1:-1, -2] - grid[1:-1, -1]) / (self.dx**2)
+                    
+                    # Corner points
+                    laplacian[0, 0] = (grid[1, 0] + grid[0, 1] - 2*grid[0, 0]) / (self.dx**2)
+                    laplacian[0, -1] = (grid[1, -1] + grid[0, -2] - 2*grid[0, -1]) / (self.dx**2)
+                    laplacian[-1, 0] = (grid[-2, 0] + grid[-1, 1] - 2*grid[-1, 0]) / (self.dx**2)
+                    laplacian[-1, -1] = (grid[-2, -1] + grid[-1, -2] - 2*grid[-1, -1]) / (self.dx**2)
+                    
+                    # Apply diffusion
+                    diffusion_deriv = D * laplacian
+                    
+                    # Update derivatives for this molecule
+                    start_idx = mol_idx * grid_height * grid_width
+                    derivatives[start_idx:start_idx + grid_height*grid_width] = diffusion_deriv.flatten()
+            
+            # Optimize strain dynamics calculation
+            for strain_idx, strain_params in enumerate(self.strains):
+                # Get population grid and internal state grids
+                pop_grid = strain_pop_grids[strain_idx]
+                strain_states = strain_internal_states[strain_idx]
+                
+                # Get strain-specific growth parameters
+                growth_params = strain_growth_params[strain_idx]
+                k = growth_params['k']
+                r = growth_params['r']
+                lag = growth_params['lag']
+                
+                # Initialize derivative arrays
+                pop_deriv = np.zeros_like(pop_grid)
+                input_sensing_deriv = np.zeros_like(strain_states[0])
+                signal_processing_deriv = np.zeros_like(strain_states[1])
+                output_deriv = np.zeros_like(strain_states[2])
+                
+                # Get input molecule grid
+                input_molecule = strain_params.input_molecule
+                if input_molecule in diffusible_molecules:
+                    input_grid = diffusible_grids[diffusible_indices[input_molecule]]
+                else:
+                    raise ValueError(f"Input molecule {input_molecule} not found in diffusible molecules")
+                
+                # Only calculate dynamics in active regions
+                if not np.all(active_mask):
+                    active_y, active_x = np.where(active_mask)
+                    
+                    # Calculate logistic growth with lag phase only in active regions
+                    if t >= lag:
+                        for i, j in zip(active_y, active_x):
+                            pop_deriv[i, j] = r * pop_grid[i, j] * (1 - total_population[i, j] / k)
+                    
+                    # Calculate internal states only in active regions
+                    for i, j in zip(active_y, active_x):
+                        # Input sensing (x₁)
+                        input_sensing_deriv[i, j] = strain_params.k1 * input_grid[i, j] - strain_params.d1 * strain_states[0][i, j]
+                        
+                        # Signal processing (x₂)
+                        if strain_params.regulation_type == ACTIVATION:
+                            # Activation: x₁ activates x₂ production
+                            x1 = max(0, strain_states[0][i, j])  # Ensure non-negative
+                            hill_term = (x1 ** strain_params.n) / ((strain_params.K ** strain_params.n) + (x1 ** strain_params.n))
+                            signal_processing_deriv[i, j] = (strain_params.k2 * hill_term) - (strain_params.d2 * strain_states[1][i, j])
+                        else:
+                            # Repression: x₁ represses x₂ production
+                            x1 = max(0, strain_states[0][i, j])  # Ensure non-negative
+                            hill_term = 1 / (1 + ((x1 / strain_params.K) ** strain_params.n))
+                            signal_processing_deriv[i, j] = (strain_params.k2 * hill_term) - (strain_params.d2 * strain_states[1][i, j])
+                        
+                        # Output production (x₃)
+                        output_deriv[i, j] = strain_params.b + strain_params.k3 * strain_states[1][i, j] - strain_params.d3 * strain_states[2][i, j]
+                else:
+                    # If most regions are active, use vectorized operations for better performance
+                    # Calculate logistic growth with lag phase
+                    if t >= lag:
+                        pop_deriv = r * pop_grid * (1 - total_population / k)
+                    
+                    # Calculate internal state derivatives
+                    # Input sensing (x₁)
+                    input_sensing_deriv = strain_params.k1 * input_grid - strain_params.d1 * strain_states[0]
+                    
+                    # Ensure non-negative values for processing
+                    x1 = np.maximum(0, strain_states[0])
+                    
+                    # Signal processing (x₂)
+                    if strain_params.regulation_type == ACTIVATION:
+                        # Activation: x₁ activates x₂ production
+                        x1_n = np.power(x1, strain_params.n)
+                        K_n = np.power(strain_params.K, strain_params.n)
+                        hill_term = x1_n / (K_n + x1_n)
+                        signal_processing_deriv = (strain_params.k2 * hill_term) - (strain_params.d2 * strain_states[1])
+                    else:
+                        # Repression: x₁ represses x₂ production
+                        x1_over_K_n = np.power(x1 / strain_params.K, strain_params.n)
+                        hill_term = 1 / (1 + x1_over_K_n)
+                        signal_processing_deriv = (strain_params.k2 * hill_term) - (strain_params.d2 * strain_states[1])
+                    
+                    # Output production (x₃)
+                    output_deriv = strain_params.b + strain_params.k3 * strain_states[1] - strain_params.d3 * strain_states[2]
+                
+                # Output rate is proportional to population
+                output_rate = pop_grid * output_deriv
+                
+                # Update molecule grids based on strain output
+                output_molecule = strain_params.output_molecule
+                
+                if output_molecule in diffusible_molecules:
+                    # Update diffusible molecule derivatives
+                    mol_idx = diffusible_indices[output_molecule]
+                    start_idx = mol_idx * grid_height * grid_width
+                    derivatives[start_idx:start_idx + grid_height*grid_width] += output_rate.flatten()
+                elif output_molecule in reporter_molecules:
+                    # Update reporter molecule derivatives
+                    mol_idx = reporter_indices[output_molecule]
+                    start_idx = (n_diffusible + mol_idx) * grid_height * grid_width
+                    derivatives[start_idx:start_idx + grid_height*grid_width] += output_rate.flatten()
+                
+                # Update population derivatives
+                start_idx = (n_diffusible + n_reporters) * grid_height * grid_width + strain_idx * (1 + n_internal_states) * grid_height * grid_width
+                derivatives[start_idx:start_idx + grid_height*grid_width] = pop_deriv.flatten()
+                
+                # Update internal state derivatives
+                derivatives[start_idx + grid_height*grid_width:start_idx + 2*grid_height*grid_width] = input_sensing_deriv.flatten()
+                derivatives[start_idx + 2*grid_height*grid_width:start_idx + 3*grid_height*grid_width] = signal_processing_deriv.flatten()
+                derivatives[start_idx + 3*grid_height*grid_width:start_idx + 4*grid_height*grid_width] = output_deriv.flatten()
+            
+            # Apply effect of BAR1 and GH3 on alpha factor and auxin
+            if BAR1 in diffusible_molecules and ALPHA in diffusible_molecules:
+                bar1_grid = diffusible_grids[diffusible_indices[BAR1]]
+                alpha_grid = diffusible_grids[diffusible_indices[ALPHA]]
+                
+                if np.any(bar1_grid > 0):
+                    # BAR1 degrades alpha factor
+                    bar1_effect = 0.1 * bar1_grid * alpha_grid
+                    
+                    # Update alpha factor derivatives
+                    alpha_idx = diffusible_indices[ALPHA]
+                    start_idx = alpha_idx * grid_height * grid_width
+                    derivatives[start_idx:start_idx + grid_height*grid_width] -= bar1_effect.flatten()
+            
+            if GH3 in diffusible_molecules and IAA in diffusible_molecules:
+                gh3_grid = diffusible_grids[diffusible_indices[GH3]]
+                iaa_grid = diffusible_grids[diffusible_indices[IAA]]
+                
+                if np.any(gh3_grid > 0):
+                    # GH3 degrades auxin
+                    gh3_effect = 0.1 * gh3_grid * iaa_grid
+                    
+                    # Update auxin derivatives
+                    iaa_idx = diffusible_indices[IAA]
+                    start_idx = iaa_idx * grid_height * grid_width
+                    derivatives[start_idx:start_idx + grid_height*grid_width] -= gh3_effect.flatten()
+            
+            # Basic degradation for signaling molecules
+            for molecule, idx in diffusible_indices.items():
+                if molecule in [BAR1, GH3]:
+                    # Apply basic degradation
+                    start_idx = idx * grid_height * grid_width
+                    derivatives[start_idx:start_idx + grid_height*grid_width] -= 0.05 * diffusible_grids[idx].flatten()
+            
+            return derivatives
+            
+        return dydt
+
     def _build_spatial_ode_system_with_competition(self) -> Callable:
         """
         Build the spatial ODE system for the model with competition between strains.
@@ -501,7 +793,7 @@ class SpatialMultiStrainModel:
             return derivatives
             
         return dydt
-    
+        
     def _get_initial_state(self) -> np.ndarray:
         """
         Get the initial state for the simulation.
@@ -539,41 +831,45 @@ class SpatialMultiStrainModel:
         
         return np.concatenate(initial_state)
     
-    def simulate(self, n_time_points: int = 100) -> Dict:
+    def simulate(self, n_time_points: int = 100, use_optimized: bool = True) -> Dict:
         """
         Run the spatial simulation with strain-specific growth parameters.
         
         Args:
             n_time_points: Number of time points to output
+            use_optimized: Whether to use the optimized ODE system
             
         Returns:
             Dictionary with simulation results
         """
+        grid_height, grid_width = self.grid_size
+
         print(f"Starting spatial simulation with {len(self.strains)} strains...")
         start_time = time.time()
         
-        # Grid dimensions
-        grid_height, grid_width = self.grid_size
-        
-        # Build ODE system with competition and strain-specific growth parameters
-        system = self._build_spatial_ode_system_with_competition()
+        # Choose which ODE system to use
+        if use_optimized:
+            system = self._build_optimized_spatial_ode_system()
+        else:
+            system = self._build_spatial_ode_system_with_competition()
         
         # Get initial state
         y0 = self._get_initial_state()
         
-        # Run simulation
+        # Run simulation with optimized parameters
         sol = solve_ivp(
             fun=system,
             t_span=self.time_span,
             y0=y0,
-            method='RK45',             # Using RK45 (Dormand-Prince method)
-            rtol=1e-3,                 # Relative tolerance (increase for speed)
-            atol=1e-6,                 # Absolute tolerance 
+            method='BDF',  # LSODA automatically switches between stiff/non-stiff methods
+            rtol=1e-4,       # Increased relative tolerance (was 1e-3) 
+            atol=1e-6,       # Increased absolute tolerance (was 1e-6)
             t_eval=np.linspace(self.time_span[0], self.time_span[1], n_time_points)
         )
         
         end_time = time.time()
         print(f"Simulation completed in {end_time - start_time:.2f} seconds")
+    
         
         # Diffusible molecules
         diffusible_molecules = [ALPHA, IAA, BETA, BAR1, GH3]

@@ -1,0 +1,12 @@
+2025-05-13 20:20:20,694 - INFO - Starting experiment: Basic_Two_Colony
+2025-05-13 20:20:20,694 - INFO - Output directory: /home/ec2-user/multicellularcircuits/firstpassexperiments/Basic_Two_Colony
+2025-05-13 20:20:20,694 - INFO - Original grid size: (70, 20), dx: 1.0, coarse factor: 4
+2025-05-13 20:20:20,694 - INFO - Actual grid size after coarsening: (17, 5)
+2025-05-13 20:20:20,694 - INFO - Model grid size: (17, 5)
+2025-05-13 20:20:20,695 - INFO - Colony 0: strain=beta->alpha, position=(7, 2), shape=circle, radius=1
+2025-05-13 20:20:20,695 - INFO - Colony 1: strain=alpha->venus, position=(10, 2), shape=circle, radius=1
+2025-05-13 20:20:20,695 - INFO - Molecule 0: type=beta_estradiol, position=(7, 2), shape=rectangle, width=2, height=2
+2025-05-13 20:20:20,696 - INFO - Running simulation with 10 time points...
+2025-05-13 20:20:30,600 - INFO - Generating plots...
+2025-05-13 20:20:31,359 - WARNING - Not enough time points for animations
+2025-05-13 20:20:32,057 - INFO - Experiment Basic_Two_Colony completed successfully

@@ -1,6 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from simulation_v5_strainspecificgrowthrates import (
+from spatial_yeast_model_carryingcapactiyfixed_v5 import (
     SpatialMultiStrainModel, 
     ALPHA, IAA, BETA, GFP, VENUS,
     create_strain_library
@@ -172,4 +172,4 @@ def analyze_xor_gate_performance(model, results, outputdir, experiment):
 # Run the simplified XOR gate
 model, results = simple_xor_gate(outputdir, experiment)
 
-analyze_xor_gate_performance(model, results, outputdir, experiment)
+#analyze_xor_gate_performance(model, results, outputdir, experiment)

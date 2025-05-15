@@ -1,0 +1,275 @@
+{
+  "experiment_name": "Complex_Arrangement",
+  "timestamp": "2025-05-13T22:26:12.689364",
+  "notes": "Complex arrangement with four colonies and three different starting molecules.",
+  "grid_parameters": {
+    "original_grid_size": [
+      100,
+      60
+    ],
+    "dx": 1.0,
+    "coarse_factor": 4,
+    "actual_grid_size": [
+      25,
+      15
+    ],
+    "actual_dx": 4.0
+  },
+  "colonies": [
+    {
+      "strain_id": "beta->alpha",
+      "position": [
+        25,
+        15
+      ],
+      "shape": "rectangle",
+      "dimensions": {
+        "radius": null,
+        "width": 10,
+        "height": 6
+      },
+      "concentration": 0.5,
+      "scaled_position": [
+        6,
+        3
+      ],
+      "scaled_dimensions": {
+        "width": 2,
+        "height": 1
+      },
+      "strain_index": 0
+    },
+    {
+      "strain_id": "alpha->venus",
+      "position": [
+        25,
+        35
+      ],
+      "shape": "rectangle",
+      "dimensions": {
+        "radius": null,
+        "width": 10,
+        "height": 6
+      },
+      "concentration": 0.5,
+      "scaled_position": [
+        6,
+        8
+      ],
+      "scaled_dimensions": {
+        "width": 2,
+        "height": 1
+      },
+      "strain_index": 1
+    },
+    {
+      "strain_id": "IAA->GFP",
+      "position": [
+        45,
+        25
+      ],
+      "shape": "circle",
+      "dimensions": {
+        "radius": 7,
+        "width": null,
+        "height": null
+      },
+      "concentration": 0.5,
+      "scaled_position": [
+        11,
+        6
+      ],
+      "scaled_dimensions": {
+        "radius": 1
+      },
+      "strain_index": 2
+    },
+    {
+      "strain_id": "alpha->alpha",
+      "position": [
+        5,
+        25
+      ],
+      "shape": "circle",
+      "dimensions": {
+        "radius": 7,
+        "width": null,
+        "height": null
+      },
+      "concentration": 0.5,
+      "scaled_position": [
+        1,
+        6
+      ],
+      "scaled_dimensions": {
+        "radius": 1
+      },
+      "strain_index": 3
+    }
+  ],
+  "molecule_distributions": [
+    {
+      "molecule_type": "beta_estradiol",
+      "position": [
+        25,
+        15
+      ],
+      "shape": "rectangle",
+      "dimensions": {
+        "radius": null,
+        "width": 12,
+        "height": 8
+      },
+      "concentration": 80,
+      "scaled_position": [
+        6,
+        3
+      ],
+      "scaled_dimensions": {
+        "width": 3,
+        "height": 2
+      }
+    },
+    {
+      "molecule_type": "alpha_factor",
+      "position": [
+        5,
+        25
+      ],
+      "shape": "circle",
+      "dimensions": {
+        "radius": 8,
+        "width": null,
+        "height": null
+      },
+      "concentration": 20,
+      "scaled_position": [
+        1,
+        6
+      ],
+      "scaled_dimensions": {
+        "radius": 2
+      }
+    },
+    {
+      "molecule_type": "IAA",
+      "position": [
+        45,
+        25
+      ],
+      "shape": "circle",
+      "dimensions": {
+        "radius": 3,
+        "width": null,
+        "height": null
+      },
+      "concentration": 50,
+      "scaled_position": [
+        11,
+        6
+      ],
+      "scaled_dimensions": {
+        "radius": 1
+      }
+    }
+  ],
+  "simulation_parameters": {
+    "time_span": [
+      0,
+      72
+    ],
+    "n_time_points": 15,
+    "molecules_to_visualize": [
+      "alpha_factor",
+      "beta_estradiol",
+      "IAA",
+      "Venus",
+      "GFP"
+    ]
+  },
+  "strain_parameters": {
+    "beta->alpha": {
+      "strain_id": "beta->alpha",
+      "input_molecule": "beta_estradiol",
+      "regulation_type": "activation",
+      "output_molecule": "alpha_factor",
+      "k1": 50.66,
+      "d1": 25.86,
+      "k2": 11,
+      "K": 57.12,
+      "n": 1.26,
+      "d2": 110.43,
+      "k3": 121.6,
+      "d3": 0.062,
+      "b": 0.14,
+      "k": 10.156865998540457,
+      "r": 1.3877019835236286,
+      "A": 3.811240700492937e-08,
+      "lag": 8.065932810614516
+    },
+    "alpha->venus": {
+      "strain_id": "alpha->venus",
+      "input_molecule": "alpha_factor",
+      "regulation_type": "activation",
+      "output_molecule": "Venus",
+      "k1": 1060.0,
+      "d1": 0.245,
+      "k2": 347000.0,
+      "K": 708000.0,
+      "n": 1.04,
+      "d2": 156000.0,
+      "k3": 16200.0,
+      "d3": 2150000.0,
+      "b": 5960.0,
+      "k": 10.156881939374474,
+      "r": 1.3876456633006105,
+      "A": 3.814254538133409e-08,
+      "lag": 8.06591253743179
+    },
+    "IAA->GFP": {
+      "strain_id": "IAA->GFP",
+      "input_molecule": "IAA",
+      "regulation_type": "activation",
+      "output_molecule": "GFP",
+      "k1": 89500.0,
+      "d1": 0.082,
+      "k2": 17300000.0,
+      "K": 14000000.0,
+      "n": 0.836,
+      "d2": 18800000.0,
+      "k3": 31500.0,
+      "d3": 1660000.0,
+      "b": 14600.0,
+      "k": 10.252654230445089,
+      "r": 0.42549511085479685,
+      "A": 0.0002582042194400119,
+      "lag": 7.805876037701137
+    },
+    "alpha->alpha": {
+      "strain_id": "alpha->alpha",
+      "input_molecule": "alpha_factor",
+      "regulation_type": "activation",
+      "output_molecule": "alpha_factor",
+      "k1": 1060.0,
+      "d1": 0.245,
+      "k2": 347000.0,
+      "K": 708000.0,
+      "n": 1.04,
+      "d2": 156000.0,
+      "k3": 419.52,
+      "d3": 21000.0,
+      "b": 23200.0,
+      "k": 10.030632161041991,
+      "r": 2.0645209329326293,
+      "A": 1.0705887173990125e-08,
+      "lag": 7.994289828061679
+    }
+  },
+  "simulation_results": {
+    "actual_time_points": 1,
+    "time_values": [
+      0.0
+    ],
+    "success": true
+  }
+}

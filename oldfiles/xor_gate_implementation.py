@@ -4,7 +4,7 @@ from scipy.integrate import solve_ivp
 from dataclasses import dataclass
 
 # Import the functions from the spatial_yeast_model provided
-from spatial_yeast_model_carryingcapactiyfixed_v4 import (
+from spatial_yeast_model_carryingcapactiyfixed_v5 import (
     SpatialMultiStrainModel, 
     StrainParameters, 
     ALPHA, IAA, BETA, GFP, 

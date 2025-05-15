@@ -1,0 +1,12 @@
+2025-05-13 20:20:32,060 - INFO - Starting experiment: Three_Colony_Ring
+2025-05-13 20:20:32,060 - INFO - Output directory: /home/ec2-user/multicellularcircuits/firstpassexperiments/Three_Colony_Ring
+2025-05-13 20:20:32,060 - INFO - Original grid size: (80, 60), dx: 1.0, coarse factor: 4
+2025-05-13 20:20:32,060 - INFO - Actual grid size after coarsening: (20, 15)
+2025-05-13 20:20:32,060 - INFO - Model grid size: (20, 15)
+2025-05-13 20:20:32,060 - INFO - Colony 0: strain=beta->alpha, position=(7, 5), shape=circle, radius=1
+2025-05-13 20:20:32,061 - INFO - Colony 1: strain=alpha->venus, position=(5, 7), shape=circle, radius=1
+2025-05-13 20:20:32,061 - INFO - Colony 2: strain=IAA->GFP, position=(10, 7), shape=circle, radius=1
+2025-05-13 20:20:32,061 - INFO - Molecule 0: type=beta_estradiol, position=(7, 5), shape=circle, radius=1
+2025-05-13 20:20:32,062 - INFO - Running simulation with 10 time points...
+2025-05-13 22:25:55,184 - INFO - Generating plots...
+2025-05-13 22:26:12,685 - INFO - Experiment Three_Colony_Ring completed successfully
