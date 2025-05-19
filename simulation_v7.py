@@ -469,7 +469,63 @@ class SpatialMultiStrainModel:
             
             # Handle signal degradation (BAR1 and GH3)
             # (Similar to original code)
-            
+            # Handle signal degradation (BAR1 and GH3)
+            # BAR1 degrades alpha-factor and GH3 converts IAA to inactive IAA-Asp
+            if all(m in diffusible_indices for m in [ALPHA, BAR1]):
+                alpha_idx = diffusible_indices[ALPHA]
+                bar1_idx = diffusible_indices[BAR1]
+                
+                alpha_grid = diffusible_grids[alpha_idx]
+                bar1_grid = diffusible_grids[bar1_idx]
+                
+                # BAR1 degradation rate constant (alpha-factor proteolysis)
+                # Based on the paper, BAR1 rapidly degrades alpha-factor
+                k_bar1 = 0.5  # Degradation rate constant
+                
+                if np.sum(active_mask) < 0.5 * grid_height * grid_width:
+                    # Calculate degradation only for active regions
+                    for i, j in zip(*active_indices):
+                        if alpha_grid[i, j] > 0 and bar1_grid[i, j] > 0:
+                            # Calculate degradation rate (proportional to both concentrations)
+                            degradation_rate = k_bar1 * bar1_grid[i, j] * alpha_grid[i, j]
+                            
+                            # Update alpha-factor derivative
+                            start_idx = alpha_idx * grid_height * grid_width + i * grid_width + j
+                            derivatives[start_idx] -= degradation_rate
+                else:
+                    # Vectorized calculation for the entire grid
+                    degradation_rates = k_bar1 * bar1_grid * alpha_grid
+                    start_idx = alpha_idx * grid_height * grid_width
+                    derivatives[start_idx:start_idx + grid_height*grid_width] -= degradation_rates.flatten()
+
+            # Handle GH3-mediated IAA degradation (conjugation to IAA-Asp)
+            if all(m in diffusible_indices for m in [IAA, GH3]):
+                iaa_idx = diffusible_indices[IAA]
+                gh3_idx = diffusible_indices[GH3]
+                
+                iaa_grid = diffusible_grids[iaa_idx]
+                gh3_grid = diffusible_grids[gh3_idx]
+                
+                # GH3 conjugation rate constant
+                # From the paper, GH3.3 converts IAA to IAA-Asp which is signaling-inactive
+                k_gh3 = 0.3  # Conjugation rate constant
+                
+                if np.sum(active_mask) < 0.5 * grid_height * grid_width:
+                    # Calculate conjugation only for active regions
+                    for i, j in zip(*active_indices):
+                        if iaa_grid[i, j] > 0 and gh3_grid[i, j] > 0:
+                            # Calculate conjugation rate (proportional to both concentrations)
+                            degradation_rate = k_gh3 * gh3_grid[i, j] * iaa_grid[i, j]
+                            
+                            # Update IAA derivative
+                            start_idx = iaa_idx * grid_height * grid_width + i * grid_width + j
+                            derivatives[start_idx] -= degradation_rate
+                else:
+                    # Vectorized calculation for the entire grid
+                    degradation_rates = k_gh3 * gh3_grid * iaa_grid
+                    start_idx = iaa_idx * grid_height * grid_width
+                    derivatives[start_idx:start_idx + grid_height*grid_width] -= degradation_rates.flatten()            
+
             return derivatives
         
         return dydt
