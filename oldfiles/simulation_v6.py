@@ -97,7 +97,7 @@ class SpatialMultiStrainModel:
         }
         
         # Default growth parameters - will be overridden by strain-specific parameters
-        self.default_carrying_capacity = 10.0  # Default carrying capacity
+        self.default_carrying_capacity = 100.0  # Default carrying capacity
         
         # Initialize with zero concentration grids
         for molecule in [ALPHA, IAA, BETA, GFP, VENUS, BAR1, GH3]:
@@ -291,6 +291,7 @@ class SpatialMultiStrainModel:
             strain_growth_params.append({
                 'k': strain.k,
                 'r': strain.r,
+                'A': strain.A,
                 'lag': strain.lag
             })
         
@@ -469,65 +470,263 @@ class SpatialMultiStrainModel:
             
             # Handle signal degradation (BAR1 and GH3)
             # (Similar to original code)
-            # Handle signal degradation (BAR1 and GH3)
-            # BAR1 degrades alpha-factor and GH3 converts IAA to inactive IAA-Asp
-            if all(m in diffusible_indices for m in [ALPHA, BAR1]):
-                alpha_idx = diffusible_indices[ALPHA]
-                bar1_idx = diffusible_indices[BAR1]
-                
-                alpha_grid = diffusible_grids[alpha_idx]
-                bar1_grid = diffusible_grids[bar1_idx]
-                
-                # BAR1 degradation rate constant (alpha-factor proteolysis)
-                # Based on the paper, BAR1 rapidly degrades alpha-factor
-                k_bar1 = 0.5  # Degradation rate constant
-                
-                if np.sum(active_mask) < 0.5 * grid_height * grid_width:
-                    # Calculate degradation only for active regions
-                    for i, j in zip(*active_indices):
-                        if alpha_grid[i, j] > 0 and bar1_grid[i, j] > 0:
-                            # Calculate degradation rate (proportional to both concentrations)
-                            degradation_rate = k_bar1 * bar1_grid[i, j] * alpha_grid[i, j]
-                            
-                            # Update alpha-factor derivative
-                            start_idx = alpha_idx * grid_height * grid_width + i * grid_width + j
-                            derivatives[start_idx] -= degradation_rate
-                else:
-                    # Vectorized calculation for the entire grid
-                    degradation_rates = k_bar1 * bar1_grid * alpha_grid
-                    start_idx = alpha_idx * grid_height * grid_width
-                    derivatives[start_idx:start_idx + grid_height*grid_width] -= degradation_rates.flatten()
-
-            # Handle GH3-mediated IAA degradation (conjugation to IAA-Asp)
-            if all(m in diffusible_indices for m in [IAA, GH3]):
-                iaa_idx = diffusible_indices[IAA]
-                gh3_idx = diffusible_indices[GH3]
-                
-                iaa_grid = diffusible_grids[iaa_idx]
-                gh3_grid = diffusible_grids[gh3_idx]
-                
-                # GH3 conjugation rate constant
-                # From the paper, GH3.3 converts IAA to IAA-Asp which is signaling-inactive
-                k_gh3 = 0.3  # Conjugation rate constant
-                
-                if np.sum(active_mask) < 0.5 * grid_height * grid_width:
-                    # Calculate conjugation only for active regions
-                    for i, j in zip(*active_indices):
-                        if iaa_grid[i, j] > 0 and gh3_grid[i, j] > 0:
-                            # Calculate conjugation rate (proportional to both concentrations)
-                            degradation_rate = k_gh3 * gh3_grid[i, j] * iaa_grid[i, j]
-                            
-                            # Update IAA derivative
-                            start_idx = iaa_idx * grid_height * grid_width + i * grid_width + j
-                            derivatives[start_idx] -= degradation_rate
-                else:
-                    # Vectorized calculation for the entire grid
-                    degradation_rates = k_gh3 * gh3_grid * iaa_grid
-                    start_idx = iaa_idx * grid_height * grid_width
-                    derivatives[start_idx:start_idx + grid_height*grid_width] -= degradation_rates.flatten()            
-
+            
             return derivatives
         
+        return dydt
+
+    def _build_spatial_ode_system_with_competition(self) -> Callable:
+        """
+        Build the spatial ODE system for the model with competition between strains.
+        Strains will compete for a shared carrying capacity at each spatial location.
+        Uses strain-specific growth parameters.
+        
+        Returns:
+            Function that computes the derivatives for the state variables
+        """
+        # Grid dimensions
+        grid_height, grid_width = self.grid_size
+        
+        # Number of diffusible molecules
+        diffusible_molecules = [ALPHA, IAA, BETA, BAR1, GH3]
+        n_diffusible = len(diffusible_molecules)
+        
+        # Number of fluorescent reporter molecules
+        reporter_molecules = [GFP, VENUS]
+        n_reporters = len(reporter_molecules)
+        
+        # Number of state variables per grid cell for each strain
+        # (3 internal states: input sensing, signal processing, output)
+        n_internal_states = 3
+        
+        # Diffusion coefficient for each molecule
+        D_values = [self.diffusion_coefficients.get(molecule, 0.0) for molecule in diffusible_molecules]
+        
+        # Create index mappings for molecules
+        diffusible_indices = {molecule: i for i, molecule in enumerate(diffusible_molecules)}
+        reporter_indices = {molecule: i for i, molecule in enumerate(reporter_molecules)}
+        
+        # Extract growth parameters for each strain
+        strain_growth_params = []
+        for strain in self.strains:
+            strain_growth_params.append({
+                'k': strain.k,          # Carrying capacity
+                'r': strain.r,          # Growth rate
+                'A': strain.A,          # Initial population fraction (not used here)
+                'lag': strain.lag       # Lag time (hours)
+            })
+        
+        # Calculate the total number of state variables
+        n_states = (n_diffusible + n_reporters) * grid_height * grid_width  # Molecule grids
+        n_states += len(self.strains) * (grid_height * grid_width + n_internal_states * grid_height * grid_width)  # Strain grids + internal states
+        
+        def dydt(t, y):
+            """
+            Compute derivatives for all state variables.
+            
+            Args:
+                t: Current time
+                y: Current state values (flattened)
+                
+            Returns:
+                Array of derivatives (flattened)
+            """
+            # Initialize derivatives array
+            derivatives = np.zeros_like(y)
+            
+            # Reshape the state array to get the molecule and strain grids
+            # First, extract the diffusible molecule grids
+            diffusible_grids = []
+            state_idx = 0
+            for i in range(n_diffusible):
+                grid = y[state_idx:state_idx + grid_height*grid_width].reshape(grid_height, grid_width)
+                diffusible_grids.append(grid)
+                state_idx += grid_height*grid_width
+            
+            # Extract reporter molecule grids
+            reporter_grids = []
+            for i in range(n_reporters):
+                grid = y[state_idx:state_idx + grid_height*grid_width].reshape(grid_height, grid_width)
+                reporter_grids.append(grid)
+                state_idx += grid_height*grid_width
+            
+            # Extract strain population grids and internal state grids
+            strain_pop_grids = []
+            strain_internal_states = []
+            
+            for strain_idx in range(len(self.strains)):
+                # Extract population grid
+                pop_grid = y[state_idx:state_idx + grid_height*grid_width].reshape(grid_height, grid_width)
+                strain_pop_grids.append(pop_grid)
+                state_idx += grid_height*grid_width
+                
+                # Extract internal state grids (3 per strain)
+                strain_states = []
+                for j in range(n_internal_states):
+                    state_grid = y[state_idx:state_idx + grid_height*grid_width].reshape(grid_height, grid_width)
+                    strain_states.append(state_grid)
+                    state_idx += grid_height*grid_width
+                
+                strain_internal_states.append(strain_states)
+            
+            # Calculate diffusion for each diffusible molecule
+            for mol_idx, D in enumerate(D_values):
+                if D > 0:  # Only apply diffusion if coefficient is positive
+                    grid = diffusible_grids[mol_idx]
+                    
+                    # Apply finite difference method for diffusion
+                    # Central difference for interior points
+                    laplacian = np.zeros_like(grid)
+                    
+                    # Interior points
+                    laplacian[1:-1, 1:-1] = (
+                        grid[:-2, 1:-1] +  # Top
+                        grid[2:, 1:-1] +   # Bottom
+                        grid[1:-1, :-2] +  # Left
+                        grid[1:-1, 2:] -   # Right
+                        4 * grid[1:-1, 1:-1]  # Center
+                    ) / (self.dx**2)
+                    
+                    # No-flux boundary conditions
+                    # Top and bottom boundaries
+                    laplacian[0, 1:-1] = (grid[1, 1:-1] - grid[0, 1:-1]) / (self.dx**2)
+                    laplacian[-1, 1:-1] = (grid[-2, 1:-1] - grid[-1, 1:-1]) / (self.dx**2)
+                    
+                    # Left and right boundaries
+                    laplacian[1:-1, 0] = (grid[1:-1, 1] - grid[1:-1, 0]) / (self.dx**2)
+                    laplacian[1:-1, -1] = (grid[1:-1, -2] - grid[1:-1, -1]) / (self.dx**2)
+                    
+                    # Corner points (average of adjacent boundary points)
+                    laplacian[0, 0] = (laplacian[0, 1] + laplacian[1, 0]) / 2
+                    laplacian[0, -1] = (laplacian[0, -2] + laplacian[1, -1]) / 2
+                    laplacian[-1, 0] = (laplacian[-2, 0] + laplacian[-1, 1]) / 2
+                    laplacian[-1, -1] = (laplacian[-2, -1] + laplacian[-1, -2]) / 2
+                    
+                    # Apply diffusion
+                    diffusion_deriv = D * laplacian
+                    
+                    # Update derivatives for this molecule
+                    start_idx = mol_idx * grid_height * grid_width
+                    derivatives[start_idx:start_idx + grid_height*grid_width] = diffusion_deriv.flatten()
+            
+            # Calculate the total population at each grid location
+            total_population = np.zeros((grid_height, grid_width))
+            for pop_grid in strain_pop_grids:
+                total_population += pop_grid
+            
+            # Calculate strain dynamics and their effects on molecule concentrations
+            for strain_idx, strain_params in enumerate(self.strains):
+                # Get population grid and internal state grids
+                pop_grid = strain_pop_grids[strain_idx]
+                strain_states = strain_internal_states[strain_idx]  # [input_sensing, signal_processing, output]
+                
+                # Get strain-specific growth parameters
+                growth_params = strain_growth_params[strain_idx]
+                k = growth_params['k']          # Carrying capacity
+                r = growth_params['r']          # Growth rate
+                lag = growth_params['lag']      # Lag time
+                
+                # Calculate logistic growth with lag phase
+                # If t < lag, no growth occurs
+                # If t >= lag, logistic growth occurs
+                if t < lag:
+                    # During lag phase, no growth
+                    pop_deriv = np.zeros_like(pop_grid)
+                else:
+                    # After lag phase, logistic growth with competition
+                    # dp/dt = r * p * (1 - total_pop/K)
+                    pop_deriv = r * pop_grid * (1 - total_population / k)
+                
+                # Get input molecule grid
+                input_molecule = strain_params.input_molecule
+                if input_molecule in diffusible_molecules:
+                    input_grid = diffusible_grids[diffusible_indices[input_molecule]]
+                else:
+                    raise ValueError(f"Input molecule {input_molecule} not found in diffusible molecules")
+                
+                # Calculate internal state derivatives
+                # Input sensing (x₁)
+                input_sensing_deriv = strain_params.k1 * input_grid - strain_params.d1 * strain_states[0]
+                strain_states = np.maximum(0, strain_states)
+                
+                # Signal processing (x₂)
+                if strain_params.regulation_type == ACTIVATION:
+                    # Activation: x₁ activates x₂ production
+                    x1_n = np.power(strain_states[0], strain_params.n)
+                    K_n = np.power(strain_params.K, strain_params.n)
+                    hill_term = x1_n / (K_n + x1_n)
+                    signal_processing_deriv = (strain_params.k2 * hill_term) - (strain_params.d2 * strain_states[1])
+                else:
+                    # Repression: x₁ represses x₂ production
+                    x1_over_K_n = np.power(strain_states[0] / strain_params.K, strain_params.n)
+                    hill_term = 1 / (1 + x1_over_K_n)
+                    signal_processing_deriv = (strain_params.k2 * hill_term) - (strain_params.d2 * strain_states[1])
+                
+                # Output production (x₃)
+                output_deriv = strain_params.b + strain_params.k3 * strain_states[1] - strain_params.d3 * strain_states[2]
+                
+                # Update molecule grids based on strain output
+                output_molecule = strain_params.output_molecule
+                
+                # Output rate is proportional to population
+                output_rate = pop_grid * (strain_params.b + strain_params.k3 * strain_states[1] - strain_params.d3 * strain_states[2])
+                
+                if output_molecule in diffusible_molecules:
+                    # Update diffusible molecule derivatives
+                    mol_idx = diffusible_indices[output_molecule]
+                    start_idx = mol_idx * grid_height * grid_width
+                    derivatives[start_idx:start_idx + grid_height*grid_width] += output_rate.flatten()
+                elif output_molecule in reporter_molecules:
+                    # Update reporter molecule derivatives
+                    mol_idx = reporter_indices[output_molecule]
+                    start_idx = (n_diffusible + mol_idx) * grid_height * grid_width
+                    derivatives[start_idx:start_idx + grid_height*grid_width] += output_rate.flatten()
+                    
+                # Update population derivatives
+                start_idx = (n_diffusible + n_reporters) * grid_height * grid_width + strain_idx * (1 + n_internal_states) * grid_height * grid_width
+                derivatives[start_idx:start_idx + grid_height*grid_width] = pop_deriv.flatten()
+                
+                # Update internal state derivatives
+                derivatives[start_idx + grid_height*grid_width:start_idx + 2*grid_height*grid_width] = input_sensing_deriv.flatten()
+                derivatives[start_idx + 2*grid_height*grid_width:start_idx + 3*grid_height*grid_width] = signal_processing_deriv.flatten()
+                derivatives[start_idx + 3*grid_height*grid_width:start_idx + 4*grid_height*grid_width] = output_deriv.flatten()
+            
+            # Apply effect of BAR1 and GH3 on alpha factor and auxin
+            if BAR1 in diffusible_molecules and ALPHA in diffusible_molecules:
+                bar1_grid = diffusible_grids[diffusible_indices[BAR1]]
+                alpha_grid = diffusible_grids[diffusible_indices[ALPHA]]
+                
+                if np.any(bar1_grid > 0):
+                    # BAR1 degrades alpha factor
+                    bar1_effect = 0.1 * bar1_grid * alpha_grid
+                    
+                    # Update alpha factor derivatives
+                    alpha_idx = diffusible_indices[ALPHA]
+                    start_idx = alpha_idx * grid_height * grid_width
+                    derivatives[start_idx:start_idx + grid_height*grid_width] -= bar1_effect.flatten()
+            
+            if GH3 in diffusible_molecules and IAA in diffusible_molecules:
+                gh3_grid = diffusible_grids[diffusible_indices[GH3]]
+                iaa_grid = diffusible_grids[diffusible_indices[IAA]]
+                
+                if np.any(gh3_grid > 0):
+                    # GH3 degrades auxin
+                    gh3_effect = 0.1 * gh3_grid * iaa_grid
+                    
+                    # Update auxin derivatives
+                    iaa_idx = diffusible_indices[IAA]
+                    start_idx = iaa_idx * grid_height * grid_width
+                    derivatives[start_idx:start_idx + grid_height*grid_width] -= gh3_effect.flatten()
+            
+            # Basic degradation for all signaling molecules
+            for molecule, idx in diffusible_indices.items():
+                if molecule in [BAR1, GH3]:
+                    # Apply basic degradation
+                    start_idx = idx * grid_height * grid_width
+                    derivatives[start_idx:start_idx + grid_height*grid_width] -= 0.05 * diffusible_grids[idx].flatten()
+            
+            return derivatives
+            
         return dydt
         
     def _get_initial_state(self) -> np.ndarray:
@@ -567,9 +766,6 @@ class SpatialMultiStrainModel:
         
         return np.concatenate(initial_state)
     
-    # Only the simulate method needs to be changed in your simulation_v6.py
-    # This is the updated simulate method that fixes the index error issue
-
     def simulate(self, n_time_points: int = 100, use_optimized: bool = True) -> Dict:
         """
         Run the spatial simulation with strain-specific growth parameters.
@@ -587,46 +783,29 @@ class SpatialMultiStrainModel:
         start_time = time.time()
         
         # Choose which ODE system to use
-        system = self._build_optimized_spatial_ode_system()
+        if use_optimized:
+            system = self._build_optimized_spatial_ode_system()
+        else:
+            system = self._build_spatial_ode_system_with_competition()
         
         # Get initial state
         y0 = self._get_initial_state()
         
-        # Set more conservative solver parameters to improve stability
-        try:
-            # Run simulation with more conservative parameters
-            sol = solve_ivp(
-                fun=system,
-                t_span=self.time_span,
-                y0=y0,
-                method='BDF',  # Better for stiff equations
-                rtol=1e-3,     # Relaxed relative tolerance
-                atol=1e-5,     # Relaxed absolute tolerance
-                max_step=0.1,  # Limit maximum step size
-                t_eval=np.linspace(self.time_span[0], self.time_span[1], n_time_points),
-                dense_output=True  # Enable dense output for more reliable time point extraction
-            )
-            
-            # Check if solver successfully reached the end time
-            if not sol.success:
-                print(f"Warning: Solver did not converge: {sol.message}")
-                
-        except Exception as e:
-            print(f"Error in simulation: {str(e)}")
-            # Create a minimal solution with at least one time point
-            print("Creating minimal solution...")
-            # Create a basic solution structure
-            sol = type('obj', (object,), {
-                't': np.array([self.time_span[0]]),
-                'y': np.zeros((len(y0), 1)),
-                'success': False,
-                'message': str(e)
-            })
-            sol.y[:, 0] = y0  # Set initial state
-            
+        # Run simulation with optimized parameters
+        sol = solve_ivp(
+            fun=system,
+            t_span=self.time_span,
+            y0=y0,
+            method='BDF',  # LSODA automatically switches between stiff/non-stiff methods
+            rtol=1e-4,       # Increased relative tolerance (was 1e-3) 
+            atol=1e-6,       # Increased absolute tolerance (was 1e-6)
+            t_eval=np.linspace(self.time_span[0], self.time_span[1], n_time_points)
+        )
+        
         end_time = time.time()
         print(f"Simulation completed in {end_time - start_time:.2f} seconds")
-
+    
+        
         # Diffusible molecules
         diffusible_molecules = [ALPHA, IAA, BETA, BAR1, GH3]
         n_diffusible = len(diffusible_molecules)
@@ -637,15 +816,11 @@ class SpatialMultiStrainModel:
         
         # Extract results
         results = {
-            't': sol.t,  # Use actual time points from solution
+            't': sol.t,
             'molecule_grids': {},
             'population_grids': [],
             'strain_state_grids': []
         }
-        
-        # Get actual number of time points (may be less than requested)
-        actual_n_time_points = len(sol.t)
-        print(f"Simulation produced {actual_n_time_points} time points (requested: {n_time_points})")
         
         # Process simulation results
         state_idx = 0
@@ -653,7 +828,7 @@ class SpatialMultiStrainModel:
         # Extract diffusible molecule grids
         for molecule in diffusible_molecules:
             molecule_data = []
-            for t_idx in range(actual_n_time_points):
+            for t_idx in range(n_time_points):
                 grid = sol.y[state_idx:state_idx + grid_height*grid_width, t_idx].reshape(grid_height, grid_width)
                 molecule_data.append(grid)
             
@@ -663,7 +838,7 @@ class SpatialMultiStrainModel:
         # Extract reporter molecule grids
         for molecule in reporter_molecules:
             molecule_data = []
-            for t_idx in range(actual_n_time_points):
+            for t_idx in range(n_time_points):
                 grid = sol.y[state_idx:state_idx + grid_height*grid_width, t_idx].reshape(grid_height, grid_width)
                 molecule_data.append(grid)
             
@@ -674,7 +849,7 @@ class SpatialMultiStrainModel:
         for strain_idx in range(len(self.strains)):
             # Extract population grid
             pop_data = []
-            for t_idx in range(actual_n_time_points):
+            for t_idx in range(n_time_points):
                 grid = sol.y[state_idx:state_idx + grid_height*grid_width, t_idx].reshape(grid_height, grid_width)
                 pop_data.append(grid)
             
@@ -685,7 +860,7 @@ class SpatialMultiStrainModel:
             strain_states = []
             for _ in range(3):  # input_sensing, signal_processing, output
                 state_data = []
-                for t_idx in range(actual_n_time_points):
+                for t_idx in range(n_time_points):
                     grid = sol.y[state_idx:state_idx + grid_height*grid_width, t_idx].reshape(grid_height, grid_width)
                     state_data.append(grid)
                 
@@ -1116,7 +1291,6 @@ def create_growth_dashboard(results, model, time_points=None, figsize=(15, 12)):
     plt.tight_layout()
     return fig
 
-
 def create_strain_library():
         """
         Create a library of all strains from the paper with growth parameters.
@@ -1160,97 +1334,64 @@ def create_strain_library():
                 'r_squared': 0.9904120220822631}}
                     
         strains = {}
-        strains['IAA-|GFP'] = StrainParameters(
-            strain_id='IAA-|GFP',
-            input_molecule=IAA,
-            regulation_type=REPRESSION,
-            output_molecule=GFP,
-            k1=1.76e6, d1=3.13e2, k2=8.29e5, K=2.57e2, n=0.89,
-            d2=4.41e5, k3=2.12e5, d3=7.46e4, b=8.68e2,
-            k=growth_params['IAA->IAA']['k'],
-            r=growth_params['IAA->IAA']['r'],
-            A=growth_params['IAA->IAA']['A'],
-            lag=growth_params['IAA->IAA']['lag']
-        )
-
-        strains['IAA-|2xGFP'] = StrainParameters(
-            strain_id='IAA-|2xGFP',
-            input_molecule=IAA,
-            regulation_type=REPRESSION,
-            output_molecule=GFP,
-            k1=0.69, d1=4.16e2, k2=2.77e2, K=1.79, n=1.011,
-            d2=11.40, k3=0.0011, d3=0.49, b=0.0049,
-            k=growth_params['IAA->IAA']['k'],
-            r=growth_params['IAA->IAA']['r'],
-            A=growth_params['IAA->IAA']['A'],
-            lag=growth_params['IAA->IAA']['lag']
-        )
-
+        
+        # 3. IAA->GFP (Auxin activating GFP)
         strains['IAA->GFP'] = StrainParameters(
             strain_id='IAA->GFP',
             input_molecule=IAA,
             regulation_type=ACTIVATION,
             output_molecule=GFP,
-            k1=8.95e4, d1=0.082, k2=1.73e7, K=1.24e7, n=0.836,
+            k1=8.95e4, d1=0.082, k2=1.73e7, K=1.4e7, n=0.836,
             d2=1.88e7, k3=3.15e4, d3=1.66e6, b=1.46e4,
-            k=growth_params['IAA->IAA']['k'],
-            r=growth_params['IAA->IAA']['r'],
-            A=growth_params['IAA->IAA']['A'],
-            lag=growth_params['IAA->IAA']['lag']
+            k=growth_params['IAA->GFP']['k'],
+            r=growth_params['IAA->GFP']['r'],
+            A=growth_params['IAA->GFP']['A'],
+            lag=growth_params['IAA->GFP']['lag']
         )
 
-        strains['alpha-|GFP'] = StrainParameters(
-            strain_id='alpha-|GFP',
-            input_molecule=ALPHA,
-            regulation_type=REPRESSION,
-            output_molecule=GFP,
-            k1=6.05, d1=59.54, k2=10.61, K=0.67, n=0.80,
-            d2=0.82, k3=3.66e-4, d3=1.10, b=0.0032,
-            k=growth_params['IAA->IAA']['k'],
-            r=growth_params['IAA->IAA']['r'],
-            A=growth_params['IAA->IAA']['A'],
-            lag=growth_params['IAA->IAA']['lag']
-        )
-
-        strains['alpha->Venus'] = StrainParameters(
-            strain_id='alpha->Venus',
+        # 5. ALPHA->VENUS (Alpha activating VENUS)
+        strains['alpha->venus'] = StrainParameters(
+            strain_id='alpha->venus',
             input_molecule=ALPHA,
             regulation_type=ACTIVATION,
             output_molecule=VENUS,
             k1=1.06e3, d1=0.245, k2=3.47e5, K=7.08e5, n=1.04,
             d2=1.56e5, k3=1.62e4, d3=2.15e6, b=5.96e3,
-            k=growth_params['IAA->IAA']['k'],
-            r=growth_params['IAA->IAA']['r'],
-            A=growth_params['IAA->IAA']['A'],
-            lag=growth_params['IAA->IAA']['lag']
+            k=growth_params['alpha->venus']['k'],
+            r=growth_params['alpha->venus']['r'],
+            A=growth_params['alpha->venus']['A'],
+            lag=growth_params['alpha->venus']['lag']
         )
 
-        strains['beta->GFP'] = StrainParameters(
-            strain_id='beta->GFP',
+        # 12. beta->IAA (beta activating IAA)
+        strains['beta->IAA'] = StrainParameters(
+            strain_id='beta->IAA',
             input_molecule=BETA,
             regulation_type=ACTIVATION,
-            output_molecule=GFP,
-            k1=50.66, d1=25.86, k2=11.00, K=57.12, n=1.26,
-            d2=110.43, k3=0.089, d3=0.16, b=2.155e-4,
-            k=growth_params['IAA->IAA']['k'],
-            r=growth_params['IAA->IAA']['r'],
-            A=growth_params['IAA->IAA']['A'],
-            lag=growth_params['IAA->IAA']['lag']
+            output_molecule=IAA,
+            k1=50.66, d1=25.86, k2=11, K=57.12, n=1.26,
+            d2=110.43, k3=3.48e3, d3=0.16, b=0.21,
+            k=growth_params['beta->IAA']['k'],
+            r=growth_params['beta->IAA']['r'],
+            A=growth_params['beta->IAA']['A'],
+            lag=growth_params['beta->IAA']['lag']
         )
-
-        strains['beta-|GFP'] = StrainParameters(
-            strain_id='beta-|GFP',
+        
+        # 13. beta->alpha (beta activating alpha)
+        strains['beta->alpha'] = StrainParameters(
+            strain_id='beta->alpha',
             input_molecule=BETA,
-            regulation_type=REPRESSION,
-            output_molecule=GFP,
-            k1=0.89, d1=0.17, k2=174.32, K=6.65, n=2.18,
-            d2=0.56, k3=1.5e-4, d3=0.55, b=3.77e-4,
-            k=growth_params['IAA->IAA']['k'],
-            r=growth_params['IAA->IAA']['r'],
-            A=growth_params['IAA->IAA']['A'],
-            lag=growth_params['IAA->IAA']['lag']
+            regulation_type=ACTIVATION,
+            output_molecule=ALPHA,
+            k1=50.66, d1=25.86, k2=11, K=57.12, n=1.26,
+            d2=110.43, k3=121.6, d3=0.062, b=0.14,
+            k=growth_params['beta->alpha']['k'],
+            r=growth_params['beta->alpha']['r'],
+            A=growth_params['beta->alpha']['A'],
+            lag=growth_params['beta->alpha']['lag']
         )
 
+        # ALPHA->IAA (Alpha activating IAA)
         strains['alpha->IAA'] = StrainParameters(
             strain_id='alpha->IAA',
             input_molecule=ALPHA,
@@ -1258,242 +1399,78 @@ def create_strain_library():
             output_molecule=IAA,
             k1=1.06e3, d1=0.245, k2=3.47e5, K=7.08e5, n=1.04,
             d2=1.56e5, k3=566.24, d3=0.575, b=55.83,
-            k=growth_params['IAA->IAA']['k'],
-            r=growth_params['IAA->IAA']['r'],
-            A=growth_params['IAA->IAA']['A'],
-            lag=growth_params['IAA->IAA']['lag']
+            k=growth_params['alpha->IAA']['k'],
+            r=growth_params['alpha->IAA']['r'],
+            A=growth_params['alpha->IAA']['A'],
+            lag=growth_params['alpha->IAA']['lag']
         )
-
-        strains['beta->BAR1'] = StrainParameters(
-            strain_id='beta->BAR1',
-            input_molecule=BETA,
-            regulation_type=ACTIVATION,
-            output_molecule=BAR1,
-            k1=50.66, d1=25.86, k2=11.00, K=57.12, n=1.26,
-            d2=110.43, k3=26.038, d3=1.92e-6, b=0.35,
-            k=growth_params['IAA->IAA']['k'],
-            r=growth_params['IAA->IAA']['r'],
-            A=growth_params['IAA->IAA']['A'],
-            lag=growth_params['IAA->IAA']['lag']
-        )
-
-        strains['beta->IAA'] = StrainParameters(
-            strain_id='beta->IAA',
-            input_molecule=BETA,
-            regulation_type=ACTIVATION,
-            output_molecule=IAA,
-            k1=50.66, d1=25.86, k2=11.00, K=57.12, n=1.26,
-            d2=110.43, k3=3.48e3, d3=0.16, b=0.21,
-            k=growth_params['IAA->IAA']['k'],
-            r=growth_params['IAA->IAA']['r'],
-            A=growth_params['IAA->IAA']['A'],
-            lag=growth_params['IAA->IAA']['lag']
-        )
-
-        strains['beta->alpha'] = StrainParameters(
-            strain_id='beta->alpha',
-            input_molecule=BETA,
-            regulation_type=ACTIVATION,
-            output_molecule=ALPHA,
-            k1=50.66, d1=25.86, k2=11.00, K=57.12, n=1.26,
-            d2=110.43, k3=121.6, d3=0.062, b=0.14,
-            k=growth_params['IAA->IAA']['k'],
-            r=growth_params['IAA->IAA']['r'],
-            A=growth_params['IAA->IAA']['A'],
-            lag=growth_params['IAA->IAA']['lag']
-        )
-
-        strains['IAA->alpha'] = StrainParameters(
-            strain_id='IAA->alpha',
-            input_molecule=IAA,
-            regulation_type=ACTIVATION,
-            output_molecule=ALPHA,
-            k1=8.95e4, d1=0.082, k2=1.73e7, K=1.24e7, n=0.836,
-            d2=1.88e7, k3=2.285, d3=0.28, b=0.74,
-            k=growth_params['IAA->IAA']['k'],
-            r=growth_params['IAA->IAA']['r'],
-            A=growth_params['IAA->IAA']['A'],
-            lag=growth_params['IAA->IAA']['lag']
-        )
-
-        strains['beta->GH3'] = StrainParameters(
-            strain_id='beta->GH3',
-            input_molecule=BETA,
-            regulation_type=ACTIVATION,
-            output_molecule=GH3,
-            k1=50.66, d1=25.86, k2=11.00, K=57.12, n=1.26,
-            d2=110.43, k3=109.96, d3=36.71, b=1.6e-4,
-            k=growth_params['IAA->IAA']['k'],
-            r=growth_params['IAA->IAA']['r'],
-            A=growth_params['IAA->IAA']['A'],
-            lag=growth_params['IAA->IAA']['lag']
-        )
-
-        strains['IAA->BAR1'] = StrainParameters(
-            strain_id='IAA->BAR1',
-            input_molecule=IAA,
-            regulation_type=ACTIVATION,
-            output_molecule=BAR1,
-            k1=8.95e4, d1=0.082, k2=1.73e7, K=1.24e7, n=0.836,
-            d2=1.88e7, k3=1.89, d3=1.83e-13, b=0.365,
-            k=growth_params['IAA->IAA']['k'],
-            r=growth_params['IAA->IAA']['r'],
-            A=growth_params['IAA->IAA']['A'],
-            lag=growth_params['IAA->IAA']['lag']
-        )
-
-        strains['alpha->GH3'] = StrainParameters(
-            strain_id='alpha->GH3',
-            input_molecule=ALPHA,
-            regulation_type=ACTIVATION,
-            output_molecule=GH3,
-            k1=1.06e3, d1=0.245, k2=3.47e5, K=7.08e5, n=1.04,
-            d2=1.56e5, k3=582.32, d3=368.67, b=1.17e-14,
-            k=growth_params['IAA->IAA']['k'],
-            r=growth_params['IAA->IAA']['r'],
-            A=growth_params['IAA->IAA']['A'],
-            lag=growth_params['IAA->IAA']['lag']
-        )
-
-        strains['alpha-|IAA'] = StrainParameters(
-            strain_id='alpha-|IAA',
-            input_molecule=ALPHA,
-            regulation_type=REPRESSION,
-            output_molecule=IAA,
-            k1=6.05, d1=59.54, k2=10.61, K=0.67, n=0.80,
-            d2=0.82, k3=4.09, d3=8.74e-11, b=47.78,
-            k=growth_params['IAA->IAA']['k'],
-            r=growth_params['IAA->IAA']['r'],
-            A=growth_params['IAA->IAA']['A'],
-            lag=growth_params['IAA->IAA']['lag']
-        )
-
-        strains['beta-|IAA'] = StrainParameters(
-            strain_id='beta-|IAA',
-            input_molecule=BETA,
-            regulation_type=REPRESSION,
-            output_molecule=IAA,
-            k1=0.89, d1=0.17, k2=174.32, K=6.65, n=2.18,
-            d2=0.56, k3=2.024e11, d3=4.29e10, b=1.85e9,
-            k=growth_params['IAA->IAA']['k'],
-            r=growth_params['IAA->IAA']['r'],
-            A=growth_params['IAA->IAA']['A'],
-            lag=growth_params['IAA->IAA']['lag']
-        )
-
-        strains['beta-|alpha'] = StrainParameters(
-            strain_id='beta-|alpha',
-            input_molecule=BETA,
-            regulation_type=REPRESSION,
-            output_molecule=ALPHA,
-            k1=0.89, d1=0.17, k2=174.32, K=6.65, n=2.18,
-            d2=0.56, k3=0.077, d3=1.77, b=0.18,
-            k=growth_params['IAA->IAA']['k'],
-            r=growth_params['IAA->IAA']['r'],
-            A=growth_params['IAA->IAA']['A'],
-            lag=growth_params['IAA->IAA']['lag']
-        )
-
-        strains['IAA-|alpha'] = StrainParameters(
-            strain_id='IAA-|alpha',
-            input_molecule=IAA,
-            regulation_type=REPRESSION,
-            output_molecule=ALPHA,
-            k1=1.76e6, d1=3.13e2, k2=8.29e5, K=2.57e2, n=0.89,
-            d2=4.41e5, k3=471.73, d3=0.41, b=1.34,
-            k=growth_params['IAA->IAA']['k'],
-            r=growth_params['IAA->IAA']['r'],
-            A=growth_params['IAA->IAA']['A'],
-            lag=growth_params['IAA->IAA']['lag']
-        )
-
+        
+        # ALPHA->ALPHA (Alpha activating ALPHA)
         strains['alpha->alpha'] = StrainParameters(
             strain_id='alpha->alpha',
             input_molecule=ALPHA,
             regulation_type=ACTIVATION,
             output_molecule=ALPHA,
             k1=1.06e3, d1=0.245, k2=3.47e5, K=7.08e5, n=1.04,
-            d2=1.56e5, k3=419.52, d3=2.10e4, b=2.32e4,
-            k=growth_params['IAA->IAA']['k'],
-            r=growth_params['IAA->IAA']['r'],
-            A=growth_params['IAA->IAA']['A'],
-            lag=growth_params['IAA->IAA']['lag']
+            d2=1.56e5, k3=419.52, d3=2.1e4, b=2.32e4,
+            k=growth_params['alpha->alpha']['k'],
+            r=growth_params['alpha->alpha']['r'],
+            A=growth_params['alpha->alpha']['A'],
+            lag=growth_params['alpha->alpha']['lag']
         )
 
+        # ALPHA->ALPHA (Alpha activating ALPHA, no leak)
+        strains['alpha->alpha_NL'] = StrainParameters(
+            strain_id='alpha->alpha_NL',
+            input_molecule=ALPHA,
+            regulation_type=ACTIVATION,
+            output_molecule=ALPHA,
+            k1=1.06e3, d1=0.245, k2=3.47e5, K=7.08e5, n=1.04,
+            d2=1.56e5, k3=419.52, d3=2.1e4, b=0,
+            k=growth_params['alpha->alpha']['k'],
+            r=growth_params['alpha->alpha']['r'],
+            A=growth_params['alpha->alpha']['A'],
+            lag=growth_params['alpha->alpha']['lag']
+        )
+        
+        # IAA->alpha (Auxin activating alpha)
+        strains['IAA->alpha'] = StrainParameters(
+            strain_id='IAA->alpha',
+            input_molecule=IAA,
+            regulation_type=ACTIVATION,
+            output_molecule=ALPHA,
+            k1=8.95e4, d1=0.082, k2=1.73e7, K=1.4e7, n=0.836,
+            d2=1.88e7, k3=2.285, d3=0.28, b=0.74,
+            k=growth_params['IAA->alpha']['k'],
+            r=growth_params['IAA->alpha']['r'],
+            A=growth_params['IAA->alpha']['A'],
+            lag=growth_params['IAA->alpha']['lag']
+        )
+        
+        # IAA->IAA (Auxin activating IAA)
         strains['IAA->IAA'] = StrainParameters(
             strain_id='IAA->IAA',
             input_molecule=IAA,
             regulation_type=ACTIVATION,
             output_molecule=IAA,
-            k1=8.95e4, d1=0.082, k2=1.73e7, K=1.24e7, n=0.836,
+            k1=8.95e4, d1=0.082, k2=1.73e7, K=1.4e7, n=0.836,
             d2=1.88e7, k3=775.05, d3=0.84, b=780.90,
             k=growth_params['IAA->IAA']['k'],
             r=growth_params['IAA->IAA']['r'],
             A=growth_params['IAA->IAA']['A'],
             lag=growth_params['IAA->IAA']['lag']
         )
-
-        strains['alpha-|BAR1'] = StrainParameters(
-            strain_id='alpha-|BAR1',
-            input_molecule=ALPHA,
-            regulation_type=REPRESSION,
-            output_molecule=BAR1,
-            k1=6.05, d1=59.54, k2=10.61, K=0.67, n=0.80,
-            d2=0.82, k3=0.0014, d3=3.74e7, b=1.096e8,
-            k=growth_params['IAA->IAA']['k'],
-            r=growth_params['IAA->IAA']['r'],
-            A=growth_params['IAA->IAA']['A'],
-            lag=growth_params['IAA->IAA']['lag']
-        )
-
-        strains['IAA-|GH3'] = StrainParameters(
-            strain_id='IAA-|GH3',
+        # IAA->IAA (Auxin activating IAA, no leak)
+        strains['IAA->IAA_NL'] = StrainParameters(
+            strain_id='IAA->IAA_NL',
             input_molecule=IAA,
-            regulation_type=REPRESSION,
-            output_molecule=GH3,
-            k1=1.76e6, d1=3.13e2, k2=8.29e5, K=2.57e2, n=0.89,
-            d2=4.41e5, k3=225.51, d3=42.46, b=3.14e-6,
+            regulation_type=ACTIVATION,
+            output_molecule=IAA,
+            k1=8.95e4, d1=0.082, k2=1.73e7, K=1.4e7, n=0.836,
+            d2=1.88e7, k3=775.05, d3=0.84, b=780.90,
             k=growth_params['IAA->IAA']['k'],
             r=growth_params['IAA->IAA']['r'],
             A=growth_params['IAA->IAA']['A'],
             lag=growth_params['IAA->IAA']['lag']
         )
-
         return strains
-        
-def plot_molecule_concentrations(results, molecules=None):
-    """
-    Plot the average concentration of each molecule over time.
-    
-    Args:
-        results: Simulation results
-        molecules: List of molecules to plot (if None, plot all)
-        
-    Returns:
-        matplotlib figure
-    """
-    if molecules is None:
-        molecules = list(results['molecule_grids'].keys())
-    
-    # Create figure
-    fig, ax = plt.subplots(figsize=(10, 6))
-    
-    # Plot each molecule's average concentration
-    for molecule in molecules:
-        if molecule in results['molecule_grids']:
-            # Calculate average concentration over the grid for each time point
-            molecule_grids = results['molecule_grids'][molecule]
-            avg_conc = [np.mean(grid) for grid in molecule_grids]
-            
-            # Plot
-            ax.plot(results['t'], avg_conc, label=f'{molecule}', linewidth=2, marker='o', markersize=4)
-    
-    # Add labels and legend
-    ax.set_xlabel('Time (hours)', fontsize=12)
-    ax.set_ylabel('Average Concentration', fontsize=12)
-    ax.set_title('Molecule Concentrations Over Time', fontsize=14)
-    ax.grid(True, alpha=0.3)
-    ax.legend()
-    plt.tight_layout()
-    return fig
-
