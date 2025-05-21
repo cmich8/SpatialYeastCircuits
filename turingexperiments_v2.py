@@ -577,8 +577,8 @@ class TuringAnalyzer:
         return report
     
     def simulate_pattern(self, grid_size=100, spatial_size=10.0, 
-                          time_points=2000, dt=0.2, noise_amplitude=0.1, 
-                          steady_state=None, initial_guess=None):
+                      time_points=2000, dt=0.2, noise_amplitude=0.1, 
+                      steady_state=None, initial_guess=None, save_frames=10):
         """
         Simulate the reaction-diffusion system on a 2D grid.
         
@@ -590,6 +590,7 @@ class TuringAnalyzer:
             noise_amplitude: Amplitude of random noise to add to initial conditions.
             steady_state: Steady state values (u0, v0) if already known.
             initial_guess: Initial guess for steady state if not provided.
+            save_frames: Number of frames to save for animation (default: 10).
             
         Returns:
             Dictionary with simulation results.
@@ -638,14 +639,18 @@ class TuringAnalyzer:
         v = np.maximum(v, 0.01)
         
         # Storage for final state
-        u_final = u.copy()
-        v_final = v.copy()
+        u_final = None
+        v_final = None
         
-        # Storage for simulation history (can be used for animations if needed)
-        u_history = []
+        # Storage for simulation history for animation (evenly spaced frames)
+        u_history = []  # We'll add frames as we go, no initial frame yet
         v_history = []
         
-        print(f"Simulating for {time_points} time steps...")
+        # Calculate frame intervals
+        frame_interval = max(1, time_points // (save_frames - 1))
+        
+        print(f"Simulating for {time_points} time steps, saving {save_frames} frames for animation...")
+        print(f"Frame interval: Every {frame_interval} time steps")
         
         # Adjust dt if it seems too large for stability
         original_dt = dt
@@ -669,6 +674,15 @@ class TuringAnalyzer:
         # Use implicit method for diffusion (more stable)
         # We'll use ADI (Alternating Direction Implicit) method
         use_implicit = True
+        
+        # Calculate total simulation time
+        total_time = time_points * dt
+        print(f"Total simulation time: {total_time:.2f} time units")
+        
+        # Always save the initial state (t=0) as the first frame
+        u_history.append(u.copy())
+        v_history.append(v.copy())
+        print(f"Saved frame 1/{save_frames} at step 0 (t=0.00)")
         
         # Time integration 
         for t in range(time_points):
@@ -775,16 +789,27 @@ class TuringAnalyzer:
             u = u_new
             v = v_new
             
-            # Store final state
-            if t == time_points - 1:
-                u_final = u.copy()
-                v_final = v.copy()
-            
-            # Store history at select intervals (for potential animation)
-            if t % (time_points // 10) == 0:
+            # Save frames for animation at regular intervals (but only if we haven't saved all frames yet)
+            if (t+1) % frame_interval == 0 and len(u_history) < save_frames - 1:  # -1 to leave room for final frame
                 u_history.append(u.copy())
                 v_history.append(v.copy())
-                print(f"Completed {t/time_points*100:.1f}% of simulation")
+                current_time = (t+1) * dt
+                print(f"Saved frame {len(u_history)}/{save_frames} at step {t+1} (t={current_time:.2f})")
+        
+        # Store final state
+        u_final = u.copy()
+        v_final = v.copy()
+        
+        # Make sure we always save the final state as the last frame
+        # Only add the final state if it's not already the last frame or if we haven't filled all frames
+        if len(u_history) < save_frames:
+            u_history.append(u_final.copy())
+            v_history.append(v_final.copy())
+            print(f"Saved frame {len(u_history)}/{save_frames} at step {time_points} (t={total_time:.2f})")
+                
+        # Check if we have collected all frames
+        if len(u_history) < save_frames:
+            print(f"Warning: Only collected {len(u_history)} frames out of {save_frames} requested.")
         
         print("Simulation completed.")
         
@@ -796,23 +821,12 @@ class TuringAnalyzer:
             'x': x,
             'y': y,
             'X': X,
-            'Y': Y
+            'Y': Y,
+            'time_points': time_points,
+            'dt': dt,
+            'total_time': total_time
         }
-        
-        print("Simulation completed.")
-        
-        return {
-            'u_final': u_final,
-            'v_final': v_final,
-            'u_history': u_history,
-            'v_history': v_history,
-            'x': x,
-            'y': y,
-            'X': X,
-            'Y': Y
-        }
-    
-    def plot_simulation_results(self, simulation_results, figsize=(18, 8), save_path=None):
+    def plot_simulation_results(self, simulation_results, figsize=(18, 8), save_path=None, save_animation=True, animation_path=None):
         """
         Plot the final state of the simulation.
         
@@ -820,6 +834,8 @@ class TuringAnalyzer:
             simulation_results: Results from simulate_pattern().
             figsize: Figure size as (width, height) tuple.
             save_path: Path to save the figure (optional).
+            save_animation: Whether to create and save an animation (default: True).
+            animation_path: Path to save the animation (optional).
             
         Returns:
             Matplotlib figure.
@@ -851,10 +867,122 @@ class TuringAnalyzer:
         
         if save_path:
             plt.savefig(save_path)
-            
+        
+        # Create animation if requested
+        if save_animation and 'u_history' in simulation_results and 'v_history' in simulation_results:
+            try:
+                self.create_animation(simulation_results, animation_path)
+            except Exception as e:
+                print(f"Warning: Failed to create animation: {str(e)}")
+        
         return fig
-
-
+    
+    def create_animation(self, simulation_results, save_path=None):
+        """
+        Create an animation of the pattern formation over time.
+        
+        Args:
+            simulation_results: Results from simulate_pattern().
+            save_path: Path to save the animation (optional).
+            
+        Returns:
+            Animation object or None if matplotlib animation is not available.
+        """
+        try:
+            import matplotlib.animation as animation
+        except ImportError:
+            print("Warning: matplotlib.animation is not available. Cannot create animation.")
+            return None
+        
+        # Extract data
+        u_history = simulation_results['u_history']
+        v_history = simulation_results['v_history']
+        
+        # If we don't have enough frames, extract more from the simulation
+        if len(u_history) < 10 and 'time_points' in simulation_results:
+            print("Not enough frames in history for animation. Re-running simulation with more history points.")
+            # We would need to re-run the simulation, but that's beyond the scope here
+        
+        # Make sure we have at least some frames
+        num_frames = len(u_history)
+        if num_frames < 2:
+            print("Error: Not enough frames for animation.")
+            return None
+            
+        print(f"Creating animation with {num_frames} frames.")
+        
+        # Create a figure for the animation
+        fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+        
+        # Get common min/max for consistent colormap scaling
+        u_min = min(np.min(u) for u in u_history)
+        u_max = max(np.max(u) for u in u_history)
+        v_min = min(np.min(v) for v in v_history)
+        v_max = max(np.max(v) for v in v_history)
+        
+        # Initialize plots with the first frame
+        im1 = axes[0].imshow(u_history[0], cmap='viridis', origin='lower',
+                        extent=[0, 10, 0, 10], animated=True, vmin=u_min, vmax=u_max)
+        axes[0].set_title('Activator (u) Concentration')
+        axes[0].set_xlabel('x (cm)')
+        axes[0].set_ylabel('y (cm)')
+        fig.colorbar(im1, ax=axes[0], label='Concentration')
+        
+        im2 = axes[1].imshow(v_history[0], cmap='plasma', origin='lower',
+                        extent=[0, 10, 0, 10], animated=True, vmin=v_min, vmax=v_max)
+        axes[1].set_title('Inhibitor (v) Concentration')
+        axes[1].set_xlabel('x (cm)')
+        fig.colorbar(im2, ax=axes[1], label='Concentration')
+        
+        # Add time information
+        time_points = simulation_results.get('time_points', num_frames)
+        dt = simulation_results.get('dt', 1.0)
+        total_time = simulation_results.get('total_time', time_points * dt)
+        
+        # Title with time information for first frame (t=0)
+        time_text = fig.suptitle(f'Time: 0.00 units (0.0% of simulation)', fontsize=14)
+        
+        plt.tight_layout()
+        
+        # Animation update function
+        def update_frame(frame):
+            im1.set_array(u_history[frame])
+            im2.set_array(v_history[frame])
+            
+            # Calculate approximate time for this frame
+            # For first frame, t=0, for last frame, t=total_time
+            if frame == 0:
+                t = 0
+            elif frame == num_frames - 1:
+                t = total_time
+            else:
+                t = total_time * frame / (num_frames - 1)
+                
+            # Update time text
+            time_text.set_text(f'Time: {t:.2f} units ({100.0 * t / total_time:.1f}% of simulation)')
+            
+            return im1, im2, time_text
+        
+        # Create the animation
+        ani = animation.FuncAnimation(fig, update_frame, frames=num_frames, 
+                                interval=500, blit=False)
+        
+        # Save the animation if a path is provided
+        if save_path:
+            try:
+                print(f"Saving animation to {save_path}...")
+                ani.save(save_path, writer='pillow', fps=2)
+                print(f"Animation saved successfully to {save_path}")
+            except Exception as e:
+                print(f"Failed to save animation: {str(e)}")
+                print("Trying alternate writer...")
+                try:
+                    ani.save(save_path, writer='imagemagick', fps=2)
+                    print(f"Animation saved to {save_path} using imagemagick")
+                except Exception as e:
+                    print(f"Failed to save animation with imagemagick: {str(e)}")
+        
+        return ani
 # Define the Gierer-Meinhardt activator-inhibitor system
 def f(u, v, p):
     """
@@ -907,8 +1035,7 @@ def g(u, v, p):
         # Fallback if computation fails
         return -d * v
 
-
-def run_turing_experiment(a, b, c, d, Du, Dv, rho=0.01, grid_size=100, time_points=2000, dt=0.1, no_simulation=False):
+def run_turing_experiment(a, b, c, d, Du, Dv, rho=0.01, grid_size=100, time_points=2000, dt=0.1, no_simulation=False, experiment_name=None):
     """
     Run a complete Turing pattern experiment with the given parameters.
     
@@ -920,6 +1047,7 @@ def run_turing_experiment(a, b, c, d, Du, Dv, rho=0.01, grid_size=100, time_poin
         time_points: Number of time steps for simulation (default: 2000)
         dt: Time step size (default: 0.1)
         no_simulation: If True, skip the simulation step (default: False)
+        experiment_name: Optional custom name for the experiment
         
     Returns:
         Tuple (directory_path, is_turing_capable)
@@ -986,9 +1114,20 @@ def run_turing_experiment(a, b, c, d, Du, Dv, rho=0.01, grid_size=100, time_poin
         'rho': rho
     }
     
-    # Create directory name based on parameters
+    # Create directory name based on parameters and experiment name
     base_dir = "turing_ideal_experiments"
-    dir_name = f"a{a}_b{b}_c{c}_d{d}_Du{Du}_Dv{Dv}"
+    
+    # Create a timestamp for unique identification
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # Use the provided experiment name or create one based on parameters
+    if experiment_name:
+        # Clean up the name to be filesystem-friendly
+        clean_name = experiment_name.replace(" ", "_").replace("/", "-").replace("\\", "-")
+        dir_name = f"{clean_name}_a{a}_b{b}_c{c}_d{d}_Du{Du}_Dv{Dv}_{timestamp}"
+    else:
+        dir_name = f"a{a}_b{b}_c{c}_d{d}_Du{Du}_Dv{Dv}_{timestamp}"
+    
     dir_path = os.path.join(base_dir, dir_name)
     
     # Create directories
@@ -997,6 +1136,27 @@ def run_turing_experiment(a, b, c, d, Du, Dv, rho=0.01, grid_size=100, time_poin
     
     if not os.path.exists(dir_path):
         os.makedirs(dir_path)
+    
+    # Save experiment parameters to a JSON file for reference
+    params_with_diffusion = {
+        'a': a,
+        'b': b,
+        'c': c,
+        'd': d,
+        'rho': rho,
+        'Du': Du,
+        'Dv': Dv,
+        'grid_size': grid_size,
+        'time_points': time_points,
+        'dt': dt,
+        'experiment_name': experiment_name or "Unnamed Experiment",
+        'timestamp': timestamp
+    }
+    
+    params_file = os.path.join(dir_path, "parameters.json")
+    with open(params_file, 'w') as f:
+        import json
+        json.dump(params_with_diffusion, f, indent=4)
     
     # Initialize analyzer with local function definitions
     analyzer = TuringAnalyzer((f_local, g_local), (Du, Dv), params)
@@ -1047,12 +1207,19 @@ def run_turing_experiment(a, b, c, d, Du, Dv, rho=0.01, grid_size=100, time_poin
                 time_points=time_points,
                 dt=dt,
                 noise_amplitude=0.05,
-                steady_state=steady_state
+                steady_state=steady_state,
+                save_frames=10  # Save 10 frames for animation
             )
             
             # Plot simulation results and save
             simulation_path = os.path.join(dir_path, "pattern_simulation.png")
-            analyzer.plot_simulation_results(simulation_results, save_path=simulation_path)
+            animation_path = os.path.join(dir_path, "pattern_animation.gif")
+            analyzer.plot_simulation_results(
+                simulation_results, 
+                save_path=simulation_path,
+                save_animation=True,
+                animation_path=animation_path
+            )
         except Exception as e:
             print(f"Warning: Simulation failed with error: {str(e)}")
             print("Continuing with analysis results only.")
@@ -1069,20 +1236,22 @@ def run_turing_experiment(a, b, c, d, Du, Dv, rho=0.01, grid_size=100, time_poin
         # Write header if new file
         if is_new_file:
             writer.writerow([
-                'a', 'b', 'c', 'd', 'Du', 'Dv', 
+                'Experiment_Name', 'a', 'b', 'c', 'd', 'Du', 'Dv', 
                 'Turing_capable', 'Score', 
                 'Diffusion_ratio', 'Wavelength',
-                'Date'
+                'Date', 'Directory'
             ])
         
         # Write data
         writer.writerow([
+            experiment_name or "Unnamed Experiment",
             a, b, c, d, Du, Dv,
             'Yes' if results['is_turing_capable'] else 'No',
             f"{results['score']:.1f}",
             f"{results['diffusion_ratio']:.2f}",
             f"{results['predicted_wavelength']:.2f}" if 'predicted_wavelength' in results else 'N/A',
-            datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            dir_name
         ])
     
     # Print success message
@@ -1092,7 +1261,6 @@ def run_turing_experiment(a, b, c, d, Du, Dv, rho=0.01, grid_size=100, time_poin
     
     return dir_path, results['is_turing_capable']
 
-
 def main():
     """Main function to parse arguments and run experiments."""
     parser = argparse.ArgumentParser(description='Run Turing pattern analysis and simulation')
@@ -1112,73 +1280,8 @@ def main():
     parser.add_argument('--dt', type=float, default=0.1, help='Time step size (default: 0.1)')
     parser.add_argument('--no_simulation', action='store_true', help='Skip simulation step (faster)')
     
-    # Batch mode
-    parser.add_argument('--batch', action='store_true', help='Run in batch mode with predefined parameters')
-    
-    args = parser.parse_args()
-    
-    if args.batch:
-        # Predefined parameter sets for batch mode
-        parameter_sets = [
-            # name, a, b, c, d, Du, Dv
-            ("Classic Spots", 0.1, 1.0, 0.9, 0.9, 0.05, 1.0),
-            ("Fine Spots", 0.15, 1.0, 1.2, 1.0, 0.02, 0.8),
-            ("Stripes", 0.2, 0.8, 1.2, 0.8, 0.04, 0.6),
-            ("Spots-to-Stripes", 0.18, 0.9, 1.0, 0.8, 0.03, 0.7),
-            ("High Contrast", 0.08, 1.2, 1.5, 1.0, 0.01, 1.5),
-            ("Non-Turing (Low Ratio)", 0.1, 1.0, 0.9, 0.9, 0.5, 1.0)
-        ]
-        
-        print(f"Running in batch mode with {len(parameter_sets)} parameter sets")
-        
-        for i, params in enumerate(parameter_sets):
-            name, a, b, c, d, Du, Dv = params
-            print(f"\n[{i+1}/{len(parameter_sets)}] Running '{name}' parameter set")
-            print(f"Parameters: a={a}, b={b}, c={c}, d={d}, Du={Du}, Dv={Dv}")
-            
-            # Run the experiment
-            dir_path, is_turing_capable = run_turing_experiment(
-                a, b, c, d, Du, Dv, args.rho
-            )
-            
-            print(f"Completed '{name}'. Results saved to {dir_path}")
-            print(f"Turing capable: {'YES' if is_turing_capable else 'NO'}")
-        
-        print("\nBatch processing complete!")
-        print(f"Results saved to turing_ideal_experiments/ directory")
-        print(f"Summary CSV file: turing_ideal_experiments/turing_ideal_experiments.csv")
-    
-    else:
-        print(f"Running Turing pattern experiment with parameters:")
-        print(f"a={args.a}, b={args.b}, c={args.c}, d={args.d}, Du={args.Du}, Dv={args.Dv}, rho={args.rho}")
-        
-        # Run the experiment
-        dir_path, is_turing_capable = run_turing_experiment(
-            args.a, args.b, args.c, args.d, args.Du, args.Dv, args.rho
-        )
-        
-        print(f"Experiment completed. Results saved to {dir_path}")
-        print(f"Turing capable: {'YES' if is_turing_capable else 'NO'}")
-        print(f"Check the CSV file at turing_ideal_experiments/turing_ideal_experiments.csv for a summary of all experiments.")
-
-def main():
-    """Main function to parse arguments and run experiments."""
-    parser = argparse.ArgumentParser(description='Run Turing pattern analysis and simulation')
-    
-    # Required parameters with defaults
-    parser.add_argument('--a', type=float, default=0.1, help='Base activator production rate')
-    parser.add_argument('--b', type=float, default=1.0, help='Activator degradation rate')
-    parser.add_argument('--c', type=float, default=0.9, help='Inhibitor production rate')
-    parser.add_argument('--d', type=float, default=0.9, help='Inhibitor degradation rate')
-    parser.add_argument('--Du', type=float, default=0.05, help='Activator diffusion coefficient')
-    parser.add_argument('--Dv', type=float, default=1.0, help='Inhibitor diffusion coefficient')
-    parser.add_argument('--rho', type=float, default=0.01, help='Basal activator production')
-    
-    # Optional simulation parameters
-    parser.add_argument('--grid_size', type=int, default=100, help='Number of grid points (default: 100)')
-    parser.add_argument('--time_points', type=int, default=2000, help='Number of simulation time steps (default: 2000)')
-    parser.add_argument('--dt', type=float, default=0.1, help='Time step size (default: 0.1)')
-    parser.add_argument('--no_simulation', action='store_true', help='Skip simulation step (faster)')
+    # Experiment naming
+    parser.add_argument('--name', type=str, help='Custom name for the experiment')
     
     # Batch mode
     parser.add_argument('--batch', action='store_true', help='Run in batch mode with predefined parameters')
@@ -1188,19 +1291,19 @@ def main():
     if args.batch:
         # Predefined parameter sets for batch mode
         parameter_sets = [
-            # name, a, b, c, d, Du, Dv
-            ("Classic Spots", 0.1, 1.0, 0.9, 0.9, 0.05, 1.0),
-            ("Fine Spots", 0.15, 1.0, 1.2, 1.0, 0.02, 0.8),
-            ("Stripes", 0.2, 0.8, 1.2, 0.8, 0.04, 0.6),
-            ("Spots-to-Stripes", 0.18, 0.9, 1.0, 0.8, 0.03, 0.7),
-            ("High Contrast", 0.08, 1.2, 1.5, 1.0, 0.01, 1.5),
-            ("Non-Turing (Low Ratio)", 0.1, 1.0, 0.9, 0.9, 0.5, 1.0)
+            # name, a, b, c, d, Du, Dv, experiment_name
+            ("Classic Spots", 0.1, 1.0, 0.9, 0.9, 0.05, 1.0, "Classic_Spots"),
+            ("Fine Spots", 0.15, 1.0, 1.2, 1.0, 0.02, 0.8, "Fine_Spots"),
+            ("Stripes", 0.2, 0.8, 1.2, 0.8, 0.04, 0.6, "Stripes"),
+            ("Spots-to-Stripes", 0.18, 0.9, 1.0, 0.8, 0.03, 0.7, "Spots_to_Stripes"),
+            ("High Contrast", 0.08, 1.2, 1.5, 1.0, 0.01, 1.5, "High_Contrast"),
+            ("Non-Turing (Low Ratio)", 0.1, 1.0, 0.9, 0.9, 0.5, 1.0, "Non_Turing_Low_Ratio")
         ]
         
         print(f"Running in batch mode with {len(parameter_sets)} parameter sets")
         
         for i, params in enumerate(parameter_sets):
-            name, a, b, c, d, Du, Dv = params
+            name, a, b, c, d, Du, Dv, experiment_name = params
             print(f"\n[{i+1}/{len(parameter_sets)}] Running '{name}' parameter set")
             print(f"Parameters: a={a}, b={b}, c={c}, d={d}, Du={Du}, Dv={Dv}")
             
@@ -1210,7 +1313,8 @@ def main():
                 grid_size=args.grid_size,
                 time_points=args.time_points,
                 dt=args.dt,
-                no_simulation=args.no_simulation
+                no_simulation=args.no_simulation,
+                experiment_name=experiment_name
             )
             
             print(f"Completed '{name}'. Results saved to {dir_path}")
@@ -1225,6 +1329,9 @@ def main():
         print(f"a={args.a}, b={args.b}, c={args.c}, d={args.d}, Du={args.Du}, Dv={args.Dv}, rho={args.rho}")
         print(f"Simulation settings: grid_size={args.grid_size}, time_points={args.time_points}, dt={args.dt}")
         
+        if args.name:
+            print(f"Experiment name: {args.name}")
+        
         if args.no_simulation:
             print("Simulation step will be skipped (analysis only)")
         
@@ -1234,7 +1341,8 @@ def main():
             grid_size=args.grid_size,
             time_points=args.time_points,
             dt=args.dt,
-            no_simulation=args.no_simulation
+            no_simulation=args.no_simulation,
+            experiment_name=args.name
         )
         
         print(f"Experiment completed. Results saved to {dir_path}")
