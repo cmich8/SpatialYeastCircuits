@@ -65,7 +65,7 @@ class StrainParameters:
 class SpatialMultiStrainModel:
     """Model for simulating multiple interacting yeast strains with spatial dynamics."""
     
-    def __init__(self, grid_size=(50, 50), dx=0.1, coarse_factor=2):
+    def __init__(self, grid_size=(50, 50), dx=0.1, coarse_factor=1):
         """
         Initialize the spatial model.
         
@@ -1212,8 +1212,8 @@ def create_strain_library():
             lag=growth_params['IAA->IAA']['lag']
         )
 
-        strains['alpha->Venus'] = StrainParameters(
-            strain_id='alpha->Venus',
+        strains['alpha->venus'] = StrainParameters(
+            strain_id='alpha->venus',
             input_molecule=ALPHA,
             regulation_type=ACTIVATION,
             output_molecule=VENUS,
@@ -1258,6 +1258,19 @@ def create_strain_library():
             output_molecule=IAA,
             k1=1.06e3, d1=0.245, k2=3.47e5, K=7.08e5, n=1.04,
             d2=1.56e5, k3=566.24, d3=0.575, b=55.83,
+            k=growth_params['IAA->IAA']['k'],
+            r=growth_params['IAA->IAA']['r'],
+            A=growth_params['IAA->IAA']['A'],
+            lag=growth_params['IAA->IAA']['lag']
+        )
+
+        strains['alpha->IAA_NL'] = StrainParameters(
+            strain_id='alpha->IAA_NL',
+            input_molecule=ALPHA,
+            regulation_type=ACTIVATION,
+            output_molecule=IAA,
+            k1=1.06e3, d1=0.245, k2=3.47e5, K=7.08e5, n=1.04,
+            d2=1.56e5, k3=566.24, d3=0.575, b=0,
             k=growth_params['IAA->IAA']['k'],
             r=growth_params['IAA->IAA']['r'],
             A=growth_params['IAA->IAA']['A'],
@@ -1315,7 +1328,18 @@ def create_strain_library():
             A=growth_params['IAA->IAA']['A'],
             lag=growth_params['IAA->IAA']['lag']
         )
-
+        strains['IAA->alpha_NL'] = StrainParameters(
+            strain_id='IAA->alpha_NL',
+            input_molecule=IAA,
+            regulation_type=ACTIVATION,
+            output_molecule=ALPHA,
+            k1=8.95e4, d1=0.082, k2=1.73e7, K=1.24e7, n=0.836,
+            d2=1.88e7, k3=2.285, d3=0.28, b=0,
+            k=growth_params['IAA->IAA']['k'],
+            r=growth_params['IAA->IAA']['r'],
+            A=growth_params['IAA->IAA']['A'],
+            lag=growth_params['IAA->IAA']['lag']
+        )
         strains['beta->GH3'] = StrainParameters(
             strain_id='beta->GH3',
             input_molecule=BETA,
@@ -1420,6 +1444,19 @@ def create_strain_library():
             lag=growth_params['IAA->IAA']['lag']
         )
 
+        strains['alpha->alpha_NL'] = StrainParameters(
+            strain_id='alpha->alpha_NL',
+            input_molecule=ALPHA,
+            regulation_type=ACTIVATION,
+            output_molecule=ALPHA,
+            k1=1.06e3, d1=0.245, k2=3.47e5, K=7.08e5, n=1.04,
+            d2=1.56e5, k3=419.52, d3=2.10e4, b=0,
+            k=growth_params['IAA->IAA']['k'],
+            r=growth_params['IAA->IAA']['r'],
+            A=growth_params['IAA->IAA']['A'],
+            lag=growth_params['IAA->IAA']['lag']
+        )
+
         strains['IAA->IAA'] = StrainParameters(
             strain_id='IAA->IAA',
             input_molecule=IAA,
@@ -1427,6 +1464,19 @@ def create_strain_library():
             output_molecule=IAA,
             k1=8.95e4, d1=0.082, k2=1.73e7, K=1.24e7, n=0.836,
             d2=1.88e7, k3=775.05, d3=0.84, b=780.90,
+            k=growth_params['IAA->IAA']['k'],
+            r=growth_params['IAA->IAA']['r'],
+            A=growth_params['IAA->IAA']['A'],
+            lag=growth_params['IAA->IAA']['lag']
+        )
+        
+        strains['IAA->IAA_NL'] = StrainParameters(
+            strain_id='IAA->IAA_NL',
+            input_molecule=IAA,
+            regulation_type=ACTIVATION,
+            output_molecule=IAA,
+            k1=8.95e4, d1=0.082, k2=1.73e7, K=1.24e7, n=0.836,
+            d2=1.88e7, k3=775.05, d3=0.84, b=0,
             k=growth_params['IAA->IAA']['k'],
             r=growth_params['IAA->IAA']['r'],
             A=growth_params['IAA->IAA']['A'],

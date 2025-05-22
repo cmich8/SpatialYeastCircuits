@@ -89,7 +89,7 @@ class MoleculeDistribution:
         }
 
 def multi_colony_experiment(experiment_name, output_base_dir, 
-                          grid_size=(70, 20), dx=1.0, coarse_factor=4,
+                          grid_size=(70, 20), dx=1.0, coarse_factor=1,
                           colonies=None, molecule_distributions=None,
                           simulation_time=48, n_time_points=10,
                           molecules_to_visualize=None,
@@ -480,56 +480,25 @@ def create_experiment_readme(experiment_dir, metadata):
 # Example usage
 if __name__ == "__main__":
     # Base output directory
-    output_base_dir = '/home/ec2-user/multicellularcircuits/firstpassexperiments'
-    
-    # Example 1: Basic two-colony experiment (using defaults)
-    experiment = 'Basic_Two_Colony'
-    multi_colony_experiment(
-        experiment, 
-        output_base_dir,
-        notes="Basic two-colony experiment with default parameters."
-    )
-    
-    # Example 2: Three-colony ring arrangement
-    experiment = 'Three_Colony_Ring'
-    colonies = [
-        Colony("beta->alpha", (30, 20), "circle", radius=5),
-        Colony("alpha->venus", (20, 30), "circle", radius=5),
-        Colony("IAA->GFP", (40, 30), "circle", radius=5)
-    ]
-    molecule_distributions = [
-        MoleculeDistribution(BETA, (30, 20), "circle", radius=6, concentration=100)
-    ]
-    multi_colony_experiment(
-        experiment,
-        output_base_dir,
-        grid_size=(80, 60),
-        colonies=colonies,
-        molecule_distributions=molecule_distributions,
-        molecules_to_visualize=[ALPHA, BETA, IAA, VENUS, GFP],
-        notes="Three colonies arranged in a triangle with different reporter strains."
-    )
+    output_base_dir = '/home/ec2-user/multicellularcircuits/diffusionexperiments/'
     
     # Example 3: Complex arrangement with multiple starting molecules
-    experiment = 'Complex_Arrangement'
+    experiment = 'senseandsecretestrain_IAA'
     colonies = [
-        Colony("beta->alpha", (25, 15), "rectangle", width=10, height=6),
-        Colony("alpha->venus", (25, 35), "rectangle", width=10, height=6),
-        Colony("IAA->GFP", (45, 25), "circle", radius=7),
-        Colony("alpha->alpha", (5, 25), "circle", radius=7)
+        Colony("beta->IAA", (5, 5), "rectangle", width=10, height=10, concentration = 1),
+        Colony("IAA->GFP", (5, 25), "rectangle", width=10, height=10, concentration = 1),
+        Colony("IAA->IAA_NL", (5, 15), "rectangle", width=10, height=10, concentration = 1)
     ]
     molecule_distributions = [
-        MoleculeDistribution(BETA, (25, 15), "rectangle", width=12, height=8, concentration=80),
-        MoleculeDistribution(ALPHA, (5, 25), "circle", radius=8, concentration=20),
-        MoleculeDistribution(IAA, (45, 25), "circle", radius=3, concentration=50)
+        MoleculeDistribution(BETA, (5, 5), "rectangle", width=10, height=10, concentration=100),
     ]
     multi_colony_experiment(
         experiment,
         output_base_dir,
-        grid_size=(100, 60),
+        grid_size=(10, 30),
         colonies=colonies,
         molecule_distributions=molecule_distributions,
-        molecules_to_visualize=[ALPHA, BETA, IAA, VENUS, GFP],
+        molecules_to_visualize=[IAA, BETA, GFP],
         simulation_time=72,
         n_time_points=15,
         notes="Complex arrangement with four colonies and three different starting molecules."
