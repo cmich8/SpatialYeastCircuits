@@ -368,6 +368,13 @@ def multi_colony_experiment(experiment_name, output_base_dir,
             
         # Create a README.md file with experiment description
         create_experiment_readme(experiment_dir, metadata)
+        try:
+            for molecule in molecules_to_visualize:
+                mol_name = molecule.lower().replace('_', '')
+                fig3 = plot_molecule_timecourse(results, model, molecules=[molecule])
+                fig3.savefig(os.path.join(experiment_dir, f"{mol_name}_timecourse.png"))
+        except Exception as e:
+            logger.error(f"Error generating molecule {mol_name} time course plot: {str(e)}")
             
         logger.info(f"Experiment {experiment_name} completed successfully")
         return results, model
@@ -480,7 +487,7 @@ def create_experiment_readme(experiment_dir, metadata):
 # Example usage
 if __name__ == "__main__":
     # Base output directory
-    output_base_dir = '/home/ec2-user/multicellularcircuits/diffusionexperiments/'
+    output_base_dir = '/home/ec2-user/multicellularcircuits/scripttesting_experiments/'
     
     # Example 3: Complex arrangement with multiple starting molecules
     experiment = 'senseandsecretestrain_IAA'
@@ -499,7 +506,8 @@ if __name__ == "__main__":
         colonies=colonies,
         molecule_distributions=molecule_distributions,
         molecules_to_visualize=[IAA, BETA, GFP],
-        simulation_time=72,
-        n_time_points=15,
+        simulation_time=48,
+        n_time_points=24,
         notes="Complex arrangement with four colonies and three different starting molecules."
     )
+    
