@@ -575,10 +575,6 @@ class TuringAnalyzer:
                 report += f"- Predicted Pattern Wavelength: {wavelength}\n"
         
         return report
-    
-    # For even more speed, you can implement a numba-accelerated version
-    # This requires the numba package to be installed
-    # To use this, replace the simulate_pattern method with this one:
 
     def simulate_pattern(self, grid_size=100, spatial_size=10.0, 
                         time_points=20000, dt=0.05, noise_amplitude=0.0, 
@@ -603,11 +599,12 @@ class TuringAnalyzer:
         try:
             import numba
         except ImportError:
-            print("Numba not installed. Falling back to standard simulation.")
-            return self.simulate_pattern(grid_size, spatial_size, time_points, dt, 
-                                        noise_amplitude, steady_state, initial_guess, save_frames)
+            print("Numba not available. Install with: pip install numba")
+            print("Falling back to slow simulation...")
+            return self._simulate_pattern_slow(grid_size, spatial_size, time_points, dt, 
+                                             noise_amplitude, steady_state, initial_guess, save_frames)
         
-        print("Starting pattern simulation with Numba optimizations...")
+        print("Starting FAST pattern simulation with Numba optimizations...")
         
         # Find steady state if not provided
         if steady_state is None:
@@ -624,11 +621,13 @@ class TuringAnalyzer:
         params = self.params
         
         # Pre-extract reaction parameters for faster computation
-        a = params.get('a', 0.1)      # Base production
-        b = params.get('b', 1.0)      # Linear degradation
-        c = params.get('c', 0.9)      # Production rate by activator
-        d = params.get('d', 1.0)      # Linear degradation
-        rho = params.get('rho', 0.0)  # Basal production
+        a = params.get('a', 0.1)
+        b = params.get('b', 1.0) 
+        c = params.get('c', 0.9)
+        d = params.get('d', 1.0)
+        rho = params.get('rho', 0.0)
+        saturation = params.get('saturation', 0.01)
+        use_saturated = 'saturation' in params
         
         # Spatial discretization
         dx = spatial_size / grid_size
@@ -637,73 +636,100 @@ class TuringAnalyzer:
         X, Y = np.meshgrid(x, y)
         
         # Define Numba-accelerated functions
-        @numba.njit
-        def laplacian(Z, dx2):
+        @numba.njit(parallel=True, fastmath=True)
+        def laplacian_numba(Z, dx2):
             """Calculate the Laplacian of Z using numba for speed."""
             rows, cols = Z.shape
             result = np.zeros_like(Z)
             
+            # Interior points
+            for i in numba.prange(1, rows-1):
+                for j in range(1, cols-1):
+                    result[i, j] = (Z[i+1, j] + Z[i-1, j] + Z[i, j+1] + Z[i, j-1] - 4*Z[i, j]) / dx2
+            
+            # Neumann boundary conditions (no-flux)
+            # Top and bottom
+            for j in range(cols):
+                result[0, j] = result[1, j]
+                result[rows-1, j] = result[rows-2, j]
+            
+            # Left and right  
             for i in range(rows):
-                for j in range(cols):
-                    # Get indices of neighbors with periodic boundary
-                    i_top = (i - 1) % rows
-                    i_bottom = (i + 1) % rows
-                    j_left = (j - 1) % cols
-                    j_right = (j + 1) % cols
-                    
-                    # Calculate Laplacian
-                    result[i, j] = (Z[i_top, j] + Z[i_bottom, j] + Z[i, j_left] + Z[i, j_right] - 4 * Z[i, j]) / dx2
-                    
+                result[i, 0] = result[i, 1]
+                result[i, cols-1] = result[i, cols-2]
+                
             return result
         
-        @numba.njit
-        def reaction_u(u, v, a, b, rho):
-            """Calculate reaction term for u."""
+        @numba.njit(parallel=True, fastmath=True)
+        def reaction_classic_numba(u, v, a, b, c, d, rho):
+            """Calculate reaction terms for classic G-M using numba."""
             rows, cols = u.shape
-            result = np.zeros_like(u)
+            r_u = np.zeros_like(u)
+            r_v = np.zeros_like(v)
             
-            for i in range(rows):
+            for i in numba.prange(rows):
                 for j in range(cols):
-                    v_safe = max(v[i, j], 1e-6)
-                    denominator = v_safe * (1.0 + 0.01 * u[i, j] * u[i, j])
+                    u_val = max(u[i, j], 1e-8)
+                    v_val = max(v[i, j], 1e-8)
+                    
+                    # Classic G-M: f = a - b*u + u²/v
+                    autocatalytic = (u_val * u_val) / v_val
+                    autocatalytic = min(autocatalytic, 1e6)  # Prevent overflow
+                    r_u[i, j] = a - b * u_val + autocatalytic + rho
+                    
+                    # g = c*u² - d*v
+                    u_squared = min(u_val * u_val, 1e6)
+                    r_v[i, j] = c * u_squared - d * v_val
+                    
+                    # Clip results
+                    r_u[i, j] = max(-100, min(100, r_u[i, j]))
+                    r_v[i, j] = max(-100, min(100, r_v[i, j]))
+                    
+            return r_u, r_v
+            
+        @numba.njit(parallel=True, fastmath=True)
+        def reaction_saturated_numba(u, v, a, b, c, d, rho, saturation):
+            """Calculate reaction terms for saturated G-M using numba."""
+            rows, cols = u.shape
+            r_u = np.zeros_like(u)
+            r_v = np.zeros_like(v)
+            
+            for i in numba.prange(rows):
+                for j in range(cols):
+                    u_val = max(u[i, j], 1e-8)
+                    v_val = max(v[i, j], 1e-8)
+                    
+                    # Saturated G-M: f = a - b*u + u²/(v*(1 + p*u²))
+                    denominator = v_val * (1.0 + saturation * u_val * u_val)
                     denominator = max(denominator, 1e-10)
+                    autocatalytic = (u_val * u_val) / denominator
+                    autocatalytic = min(autocatalytic, 1e6)  # Prevent overflow
+                    r_u[i, j] = a - b * u_val + autocatalytic + rho
                     
-                    autocatalytic = (u[i, j] * u[i, j]) / denominator
-                    autocatalytic = min(autocatalytic, 1e6)
+                    # g = c*u² - d*v (same as classic)
+                    u_squared = min(u_val * u_val, 1e6)
+                    r_v[i, j] = c * u_squared - d * v_val
                     
-                    result[i, j] = a - b * u[i, j] + autocatalytic + rho
-                    # Clip extreme values
-                    result[i, j] = max(-100, min(100, result[i, j]))
+                    # Clip results
+                    r_u[i, j] = max(-100, min(100, r_u[i, j]))
+                    r_v[i, j] = max(-100, min(100, r_v[i, j]))
                     
-            return result
+            return r_u, r_v
         
-        @numba.njit
-        def reaction_v(u, v, c, d):
-            """Calculate reaction term for v."""
-            rows, cols = u.shape
-            result = np.zeros_like(u)
-            
-            for i in range(rows):
-                for j in range(cols):
-                    u_squared = u[i, j] * u[i, j]
-                    result[i, j] = c * u_squared - d * v[i, j]
-                    # Clip extreme values
-                    result[i, j] = max(-100, min(100, result[i, j]))
-                    
-            return result
-        
-        @numba.njit
-        def simulation_step(u, v, Du, Dv, dt, dx2, a, b, c, d, rho):
-            """Perform one simulation step."""
-            # Calculate reaction terms
-            r_u = reaction_u(u, v, a, b, rho)
-            r_v = reaction_v(u, v, c, d)
-            
+        @numba.njit(fastmath=True)
+        def simulation_step_numba(u, v, Du, Dv, dt, dx2, a, b, c, d, rho, saturation, use_saturated):
+            """Perform one simulation step using numba."""
             # Calculate Laplacians
-            lap_u = laplacian(u, dx2)
-            lap_v = laplacian(v, dx2)
+            lap_u = laplacian_numba(u, dx2)
+            lap_v = laplacian_numba(v, dx2)
             
-            # Update using explicit method
+            # Calculate reaction terms
+            if use_saturated:
+                r_u, r_v = reaction_saturated_numba(u, v, a, b, c, d, rho, saturation)
+            else:
+                r_u, r_v = reaction_classic_numba(u, v, a, b, c, d, rho)
+            
+            # Update using explicit Euler method
             u_new = u + dt * (Du * lap_u + r_u)
             v_new = v + dt * (Dv * lap_v + r_v)
             
@@ -711,8 +737,8 @@ class TuringAnalyzer:
             rows, cols = u.shape
             for i in range(rows):
                 for j in range(cols):
-                    u_new[i, j] = max(0.01, min(1e6, u_new[i, j]))
-                    v_new[i, j] = max(0.01, min(1e6, v_new[i, j]))
+                    u_new[i, j] = max(0.001, min(1000.0, u_new[i, j]))
+                    v_new[i, j] = max(0.001, min(1000.0, v_new[i, j]))
             
             return u_new, v_new
         
@@ -722,58 +748,79 @@ class TuringAnalyzer:
         v = v0 * np.ones((grid_size, grid_size)) + noise_amplitude * np.random.randn(grid_size, grid_size)
         
         # Ensure positive concentrations
-        u = np.maximum(u, 0.01)
-        v = np.maximum(v, 0.01)
+        u = np.maximum(u, 0.001)
+        v = np.maximum(v, 0.001)
         
         # Storage for simulation history
         u_history = []
         v_history = []
         
-        # Calculate frame intervals
-        frame_interval = max(1, time_points // (save_frames - 1))
-        
-        # Adjust dt if it seems too large for stability
-        max_diffusion = max(Du, Dv)
-        stability_dt = 0.25 * (dx * dx) / max_diffusion
-        min_dt = 0.01
-        
-        if stability_dt < min_dt:
-            stability_dt = min_dt
-        
-        if dt > stability_dt:
-            dt = stability_dt
-            print(f"Adjusted dt to {dt} for stability")
-        
-        # Calculate dx^2 once for efficiency
-        dx2 = dx * dx
+        # Calculate frame intervals - save frames evenly throughout simulation
+        if save_frames > 1:
+            frame_indices = np.linspace(0, time_points-1, save_frames, dtype=int)
+        else:
+            frame_indices = [time_points-1]  # Just save the final frame
         
         # Always save the initial state (t=0) as the first frame
         u_history.append(u.copy())
         v_history.append(v.copy())
         print(f"Saved frame 1/{save_frames} at step 0 (t=0.00)")
         
-        # Time integration loop
-        for t in range(time_points):
+        # Adjust dt if it seems too large for stability
+        max_diffusion = max(Du, Dv)
+        stability_dt = 0.2 * (dx * dx) / max_diffusion
+        min_dt = 0.001
+        
+        if stability_dt < min_dt:
+            stability_dt = min_dt
+        
+        if dt > stability_dt:
+            dt = stability_dt
+            print(f"Adjusted dt to {dt:.4f} for stability")
+        
+        # Calculate dx^2 once for efficiency
+        dx2 = dx * dx
+        
+        print(f"Starting time integration with {time_points} steps...")
+        
+        # Time integration loop with progress reporting
+        progress_interval = max(1, time_points // 20)  # Report progress 20 times
+        
+        # JIT compile the function on first call (this takes a moment)
+        print("JIT compiling simulation functions (first run only)...")
+        u, v = simulation_step_numba(u, v, Du, Dv, dt, dx2, a, b, c, d, rho, saturation, use_saturated)
+        print("JIT compilation complete. Starting main simulation...")
+        
+        for t in range(1, time_points):
             # Update using Numba-accelerated function
-            u, v = simulation_step(u, v, Du, Dv, dt, dx2, a, b, c, d, rho)
+            u, v = simulation_step_numba(u, v, Du, Dv, dt, dx2, a, b, c, d, rho, saturation, use_saturated)
             
-            # Save frames at regular intervals
-            if (t+1) % frame_interval == 0 and len(u_history) < save_frames - 1:
+            # Progress reporting
+            if t % progress_interval == 0:
+                progress = 100.0 * t / time_points
+                current_time = t * dt
+                print(f"Progress: {progress:.1f}% (step {t}/{time_points}, t={current_time:.2f})")
+            
+            # Save frames at specified intervals
+            if t in frame_indices[1:]:  # Skip index 0 since we already saved initial
                 u_history.append(u.copy())
                 v_history.append(v.copy())
-                current_time = (t+1) * dt
-                print(f"Saved frame {len(u_history)}/{save_frames} at step {t+1} (t={current_time:.2f})")
+                current_time = t * dt
+                frame_num = len(u_history)
+                print(f"Saved frame {frame_num}/{save_frames} at step {t} (t={current_time:.2f})")
         
-        # Save final state
+        # Ensure the final state is the last frame in history
         u_final = u.copy()
         v_final = v.copy()
         
-        # Make sure the final state is saved as the last frame
-        if len(u_history) < save_frames:
-            u_history.append(u_final.copy())
-            v_history.append(v_final.copy())
+        # If the last frame wasn't saved due to indexing, replace the last saved frame
+        if len(u_history) > 0:
+            u_history[-1] = u_final.copy()
+            v_history[-1] = v_final.copy()
         
         total_time = time_points * dt
+        
+        print(f"FAST simulation completed! Total time: {total_time:.2f}")
         
         return {
             'u_final': u_final,
@@ -786,8 +833,172 @@ class TuringAnalyzer:
             'Y': Y,
             'time_points': time_points,
             'dt': dt,
-            'total_time': total_time
+            'total_time': total_time,
+            'frame_indices': frame_indices
         }
+    
+    def _simulate_pattern_slow(self, grid_size=100, spatial_size=10.0, 
+                              time_points=20000, dt=0.05, noise_amplitude=0.0, 
+                              steady_state=None, initial_guess=None, save_frames=10):
+        """
+        Fallback simulation method without Numba (slower but always works).
+        """
+        print("Running fallback simulation (slower)...")
+        
+        # Find steady state if not provided
+        if steady_state is None:
+            steady_state = self.find_steady_state(initial_guess)
+            if steady_state is None:
+                print("Warning: Could not find steady state. Using default values.")
+                steady_state = np.array([1.0, 1.0])
+                
+        u0, v0 = steady_state
+        print(f"Using steady state: u0={u0:.4f}, v0={v0:.4f}")
+        
+        # Extract parameters for faster access
+        Du, Dv = self.Du, self.Dv
+        params = self.params
+        
+        # Spatial discretization
+        dx = spatial_size / grid_size
+        x = np.linspace(0, spatial_size, grid_size)
+        y = np.linspace(0, spatial_size, grid_size)
+        X, Y = np.meshgrid(x, y)
+        
+        # Initialize with steady state plus small random perturbations
+        np.random.seed(42)  # For reproducibility
+        u = u0 * np.ones((grid_size, grid_size)) + noise_amplitude * np.random.randn(grid_size, grid_size)
+        v = v0 * np.ones((grid_size, grid_size)) + noise_amplitude * np.random.randn(grid_size, grid_size)
+        
+        # Ensure positive concentrations
+        u = np.maximum(u, 0.001)
+        v = np.maximum(v, 0.001)
+        
+        # Storage for simulation history
+        u_history = []
+        v_history = []
+        
+        # Calculate frame intervals - save frames evenly throughout simulation
+        if save_frames > 1:
+            frame_indices = np.linspace(0, time_points-1, save_frames, dtype=int)
+        else:
+            frame_indices = [time_points-1]  # Just save the final frame
+        
+        # Always save the initial state (t=0) as the first frame
+        u_history.append(u.copy())
+        v_history.append(v.copy())
+        print(f"Saved frame 1/{save_frames} at step 0 (t=0.00)")
+        
+        # Adjust dt if it seems too large for stability
+        max_diffusion = max(Du, Dv)
+        stability_dt = 0.2 * (dx * dx) / max_diffusion
+        min_dt = 0.001
+        
+        if stability_dt < min_dt:
+            stability_dt = min_dt
+        
+        if dt > stability_dt:
+            dt = stability_dt
+            print(f"Adjusted dt to {dt:.4f} for stability")
+        
+        # Calculate dx^2 once for efficiency
+        dx2 = dx * dx
+        
+        # Time integration loop
+        progress_interval = max(1, time_points // 10)  # Report progress 10 times
+        
+        for t in range(time_points):
+            # Calculate Laplacians using vectorized operations (faster than nested loops)
+            u_lap = np.zeros_like(u)
+            v_lap = np.zeros_like(v)
+            
+            # Interior points (vectorized)
+            u_lap[1:-1, 1:-1] = (u[2:, 1:-1] + u[:-2, 1:-1] + u[1:-1, 2:] + u[1:-1, :-2] - 4*u[1:-1, 1:-1]) / dx2
+            v_lap[1:-1, 1:-1] = (v[2:, 1:-1] + v[:-2, 1:-1] + v[1:-1, 2:] + v[1:-1, :-2] - 4*v[1:-1, 1:-1]) / dx2
+            
+            # Handle boundaries with no-flux (Neumann) conditions
+            u_lap[0, :] = u_lap[1, :]
+            u_lap[-1, :] = u_lap[-2, :]
+            v_lap[0, :] = v_lap[1, :]
+            v_lap[-1, :] = v_lap[-2, :]
+            u_lap[:, 0] = u_lap[:, 1]
+            u_lap[:, -1] = u_lap[:, -2]
+            v_lap[:, 0] = v_lap[:, 1]
+            v_lap[:, -1] = v_lap[:, -2]
+            
+            # Calculate reaction terms (vectorized where possible)
+            # Prevent division by zero
+            v_safe = np.maximum(v, 1e-8)
+            u_safe = np.maximum(u, 1e-8)
+            
+            # Use vectorized operations for reaction terms
+            if 'saturation' in params:
+                # Saturated version
+                saturation = params['saturation']
+                denominator = v_safe * (1.0 + saturation * u_safe * u_safe)
+                denominator = np.maximum(denominator, 1e-10)
+                autocatalytic = np.minimum((u_safe * u_safe) / denominator, 1e6)
+            else:
+                # Classic version
+                autocatalytic = np.minimum((u_safe * u_safe) / v_safe, 1e6)
+            
+            r_u = params.get('a', 0.1) - params.get('b', 1.0) * u_safe + autocatalytic + params.get('rho', 0.0)
+            r_v = params.get('c', 0.9) * np.minimum(u_safe * u_safe, 1e6) - params.get('d', 1.0) * v_safe
+            
+            # Clip reaction terms
+            r_u = np.clip(r_u, -100, 100)
+            r_v = np.clip(r_v, -100, 100)
+            
+            # Update using explicit Euler method
+            u_new = u + dt * (Du * u_lap + r_u)
+            v_new = v + dt * (Dv * v_lap + r_v)
+            
+            # Ensure positive concentrations and prevent overflow
+            u = np.clip(u_new, 0.001, 1000.0)
+            v = np.clip(v_new, 0.001, 1000.0)
+            
+            # Progress reporting
+            if t % progress_interval == 0 and t > 0:
+                progress = 100.0 * t / time_points
+                current_time = t * dt
+                print(f"Progress: {progress:.1f}% (step {t}/{time_points}, t={current_time:.2f})")
+            
+            # Save frames at specified intervals
+            if t in frame_indices[1:]:  # Skip index 0 since we already saved initial
+                u_history.append(u.copy())
+                v_history.append(v.copy())
+                current_time = t * dt
+                frame_num = len(u_history)
+                print(f"Saved frame {frame_num}/{save_frames} at step {t} (t={current_time:.2f})")
+        
+        # Ensure the final state is the last frame in history
+        u_final = u.copy()
+        v_final = v.copy()
+        
+        # If the last frame wasn't saved due to indexing, replace the last saved frame
+        if len(u_history) > 0:
+            u_history[-1] = u_final.copy()
+            v_history[-1] = v_final.copy()
+        
+        total_time = time_points * dt
+        
+        print(f"Fallback simulation completed. Total time: {total_time:.2f}")
+        
+        return {
+            'u_final': u_final,
+            'v_final': v_final,
+            'u_history': u_history,
+            'v_history': v_history,
+            'x': x,
+            'y': y,
+            'X': X,
+            'Y': Y,
+            'time_points': time_points,
+            'dt': dt,
+            'total_time': total_time,
+            'frame_indices': frame_indices
+        }
+    
     def plot_simulation_results(self, simulation_results, figsize=(18, 8), save_path=None, save_animation=True, animation_path=None):
         """
         Plot the final state of the simulation.
@@ -812,7 +1023,7 @@ class TuringAnalyzer:
         # Plot activator (u)
         im1 = axes[0].imshow(u_final, cmap='viridis', origin='lower', 
                             extent=[0, 10, 0, 10])
-        axes[0].set_title('Activator (u) Concentration')
+        axes[0].set_title('Activator (u) Concentration - Final State')
         axes[0].set_xlabel('x (cm)')
         axes[0].set_ylabel('y (cm)')
         fig.colorbar(im1, ax=axes[0], label='Concentration')
@@ -820,7 +1031,7 @@ class TuringAnalyzer:
         # Plot inhibitor (v)
         im2 = axes[1].imshow(v_final, cmap='plasma', origin='lower', 
                             extent=[0, 10, 0, 10])
-        axes[1].set_title('Inhibitor (v) Concentration')
+        axes[1].set_title('Inhibitor (v) Concentration - Final State')
         axes[1].set_xlabel('x (cm)')
         axes[1].set_ylabel('y (cm)')
         fig.colorbar(im2, ax=axes[1], label='Concentration')
@@ -828,7 +1039,7 @@ class TuringAnalyzer:
         plt.tight_layout()
         
         if save_path:
-            plt.savefig(save_path)
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
         
         # Create animation if requested
         if save_animation and 'u_history' in simulation_results and 'v_history' in simulation_results:
@@ -860,12 +1071,6 @@ class TuringAnalyzer:
         u_history = simulation_results['u_history']
         v_history = simulation_results['v_history']
         
-        # If we don't have enough frames, extract more from the simulation
-        if len(u_history) < 10 and 'time_points' in simulation_results:
-            print("Not enough frames in history for animation. Re-running simulation with more history points.")
-            # We would need to re-run the simulation, but that's beyond the scope here
-        
-        # Make sure we have at least some frames
         num_frames = len(u_history)
         if num_frames < 2:
             print("Error: Not enough frames for animation.")
@@ -888,13 +1093,14 @@ class TuringAnalyzer:
         axes[0].set_title('Activator (u) Concentration')
         axes[0].set_xlabel('x (cm)')
         axes[0].set_ylabel('y (cm)')
-        fig.colorbar(im1, ax=axes[0], label='Concentration')
+        cbar1 = fig.colorbar(im1, ax=axes[0], label='Concentration')
         
         im2 = axes[1].imshow(v_history[0], cmap='plasma', origin='lower',
                         extent=[0, 10, 0, 10], animated=True, vmin=v_min, vmax=v_max)
         axes[1].set_title('Inhibitor (v) Concentration')
         axes[1].set_xlabel('x (cm)')
-        fig.colorbar(im2, ax=axes[1], label='Concentration')
+        axes[1].set_ylabel('y (cm)')
+        cbar2 = fig.colorbar(im2, ax=axes[1], label='Concentration')
         
         # Add time information
         time_points = simulation_results.get('time_points', num_frames)
@@ -912,7 +1118,6 @@ class TuringAnalyzer:
             im2.set_array(v_history[frame])
             
             # Calculate approximate time for this frame
-            # For first frame, t=0, for last frame, t=total_time
             if frame == 0:
                 t = 0
             elif frame == num_frames - 1:
@@ -923,81 +1128,115 @@ class TuringAnalyzer:
             # Update time text
             time_text.set_text(f'Time: {t:.2f} units ({100.0 * t / total_time:.1f}% of simulation)')
             
-            return im1, im2, time_text
+            return [im1, im2, time_text]
         
         # Create the animation
         ani = animation.FuncAnimation(fig, update_frame, frames=num_frames, 
-                                interval=500, blit=False)
+                                interval=500, blit=False, repeat=True)
         
         # Save the animation if a path is provided
         if save_path:
             try:
                 print(f"Saving animation to {save_path}...")
-                ani.save(save_path, writer='pillow', fps=2)
+                ani.save(save_path, writer='pillow', fps=2, dpi=150)
                 print(f"Animation saved successfully to {save_path}")
             except Exception as e:
                 print(f"Failed to save animation: {str(e)}")
                 print("Trying alternate writer...")
                 try:
-                    ani.save(save_path, writer='imagemagick', fps=2)
+                    ani.save(save_path, writer='imagemagick', fps=2, dpi=150)
                     print(f"Animation saved to {save_path} using imagemagick")
                 except Exception as e:
                     print(f"Failed to save animation with imagemagick: {str(e)}")
         
         return ani
-# Define the Gierer-Meinhardt activator-inhibitor system
-def f(u, v, p):
-    """
-    Activator reaction term for the Gierer-Meinhardt model.
-    u: activator concentration
-    v: inhibitor concentration
-    """
-    a = p.get('a', 0.1)      # Base production
-    b = p.get('b', 1.0)      # Linear degradation
-    rho = p.get('rho', 0.0)  # Basal production
-    
-    # Ensure v is not too close to zero to avoid division issues
-    v_safe = max(v, 1e-6)
-    
-    # Safely compute the autocatalytic term with inhibition
-    try:
-        denominator = v_safe * (1.0 + 0.01 * u * u)
-        if denominator < 1e-10:
-            denominator = 1e-10
-        
-        autocatalytic = (u * u) / denominator
-        # Clip to prevent overflow
-        autocatalytic = min(autocatalytic, 1e6)
-        
-        result = a - b * u + autocatalytic + rho
-        # Final clip to ensure result is within a reasonable range
-        return np.clip(result, -1e6, 1e6)
-    except:
-        # Fallback if computation fails
-        return a - b * u + rho
 
-def g(u, v, p):
+# Define the Classic Gierer-Meinhardt system (unsaturated)
+def f_classic(u, v, p):
     """
-    Inhibitor reaction term for the Gierer-Meinhardt model.
-    u: activator concentration
-    v: inhibitor concentration
-    """
-    c = p.get('c', 0.9)      # Production rate by activator
-    d = p.get('d', 1.0)      # Linear degradation
+    Classic Gierer-Meinhardt activator equation (unsaturated):
+    du/dt = a - b*u + u²/v + Du*∇²u
     
-    # Safely compute inhibitor production
-    try:
-        # Clip u*u to prevent overflow
-        u_squared = min(u * u, 1e6)
-        
-        result = c * u_squared - d * v
-        # Clip to ensure result is within a reasonable range
-        return np.clip(result, -1e6, 1e6)
-    except:
-        # Fallback if computation fails
-        return -d * v
+    Args:
+        u: activator concentration
+        v: inhibitor concentration  
+        p: parameter dictionary
+    """
+    a = p.get('a', 0.1)    # basal production rate
+    b = p.get('b', 1.0)    # degradation rate
+    rho = p.get('rho', 0.0)  # additional basal production
+    
+    # Prevent division by zero
+    v_safe = max(v, 1e-8)
+    
+    # Classic G-M: autocatalytic term u²/v
+    autocatalytic = (u * u) / v_safe
+    
+    # Prevent overflow
+    autocatalytic = min(autocatalytic, 1e6)
+    
+    result = a - b * u + autocatalytic + rho
+    return np.clip(result, -1e6, 1e6)
 
-def run_turing_experiment(a, b, c, d, Du, Dv, rho=0.01, grid_size=100, time_points=2000, dt=0.1, no_simulation=False, experiment_name=None):
+def g_classic(u, v, p):
+    """
+    Classic Gierer-Meinhardt inhibitor equation:
+    dv/dt = c*u² - d*v + Dv*∇²v
+    
+    Args:
+        u: activator concentration
+        v: inhibitor concentration
+        p: parameter dictionary
+    """
+    c = p.get('c', 1.0)    # production rate by activator
+    d = p.get('d', 1.0)    # degradation rate
+    
+    # Production proportional to u²
+    u_squared = min(u * u, 1e6)  # Prevent overflow
+    
+    result = c * u_squared - d * v
+    return np.clip(result, -1e6, 1e6)
+
+# Define the Saturated Gierer-Meinhardt system
+def f_saturated(u, v, p):
+    """
+    Saturated Gierer-Meinhardt activator equation:
+    du/dt = a - b*u + u²/(v*(1 + p*u²)) + Du*∇²u
+    
+    This is the version from the paper you provided.
+    
+    Args:
+        u: activator concentration
+        v: inhibitor concentration
+        p: parameter dictionary
+    """
+    a = p.get('a', 0.1)      # basal production rate
+    b = p.get('b', 1.0)      # degradation rate
+    saturation = p.get('saturation', 0.01)  # saturation parameter (p in paper)
+    rho = p.get('rho', 0.0)  # additional basal production
+    
+    # Prevent division by zero
+    v_safe = max(v, 1e-8)
+    
+    # Saturated autocatalytic term: u²/(v*(1 + p*u²))
+    denominator = v_safe * (1.0 + saturation * u * u)
+    denominator = max(denominator, 1e-10)
+    
+    autocatalytic = (u * u) / denominator
+    autocatalytic = min(autocatalytic, 1e6)  # Prevent overflow
+    
+    result = a - b * u + autocatalytic + rho
+    return np.clip(result, -1e6, 1e6)
+
+def g_saturated(u, v, p):
+    """
+    Saturated Gierer-Meinhardt inhibitor equation (same as classic):
+    dv/dt = c*u² - d*v + Dv*∇²v
+    """
+    return g_classic(u, v, p)  # Same as classic version
+
+def run_turing_experiment(a, b, c, d, Du, Dv, rho=0.01, grid_size=100, time_points=2000, dt=0.1, 
+                         no_simulation=False, experiment_name=None, use_saturated=False, saturation=0.01):
     """
     Run a complete Turing pattern experiment with the given parameters.
     
@@ -1010,62 +1249,12 @@ def run_turing_experiment(a, b, c, d, Du, Dv, rho=0.01, grid_size=100, time_poin
         dt: Time step size (default: 0.1)
         no_simulation: If True, skip the simulation step (default: False)
         experiment_name: Optional custom name for the experiment
+        use_saturated: If True, use saturated G-M model (default: False - uses classic)
+        saturation: Saturation parameter for saturated model (default: 0.01)
         
     Returns:
         Tuple (directory_path, is_turing_capable)
     """
-    # Define the reaction terms for this scope - these need to be defined within the function
-    # to ensure they're accessible when creating the analyzer
-    def f_local(u, v, p):
-        """
-        Activator reaction term for the Gierer-Meinhardt model.
-        u: activator concentration
-        v: inhibitor concentration
-        """
-        a_local = p.get('a', 0.1)      # Base production
-        b_local = p.get('b', 1.0)      # Linear degradation
-        rho_local = p.get('rho', 0.0)  # Basal production
-        
-        # Ensure v is not too close to zero to avoid division issues
-        v_safe = max(v, 1e-6)
-        
-        # Safely compute the autocatalytic term with inhibition
-        try:
-            denominator = v_safe * (1.0 + 0.01 * u * u)
-            if denominator < 1e-10:
-                denominator = 1e-10
-            
-            autocatalytic = (u * u) / denominator
-            # Clip to prevent overflow
-            autocatalytic = min(autocatalytic, 1e6)
-            
-            result = a_local - b_local * u + autocatalytic + rho_local
-            # Final clip to ensure result is within a reasonable range
-            return np.clip(result, -1e6, 1e6)
-        except:
-            # Fallback if computation fails
-            return a_local - b_local * u + rho_local
-
-    def g_local(u, v, p):
-        """
-        Inhibitor reaction term for the Gierer-Meinhardt model.
-        u: activator concentration
-        v: inhibitor concentration
-        """
-        c_local = p.get('c', 0.9)      # Production rate by activator
-        d_local = p.get('d', 1.0)      # Linear degradation
-        
-        # Safely compute inhibitor production
-        try:
-            # Clip u*u to prevent overflow
-            u_squared = min(u * u, 1e6)
-            
-            result = c_local * u_squared - d_local * v
-            # Clip to ensure result is within a reasonable range
-            return np.clip(result, -1e6, 1e6)
-        except:
-            # Fallback if computation fails
-            return -d_local * v
     
     # Create parameters
     params = {
@@ -1076,8 +1265,16 @@ def run_turing_experiment(a, b, c, d, Du, Dv, rho=0.01, grid_size=100, time_poin
         'rho': rho
     }
     
+    if use_saturated:
+        params['saturation'] = saturation
+        f_func, g_func = f_saturated, g_saturated
+        model_type = "Saturated"
+    else:
+        f_func, g_func = f_classic, g_classic
+        model_type = "Classic"
+    
     # Create directory name based on parameters and experiment name
-    base_dir = "turing_ideal_experiments"
+    base_dir = "turing_experiments"
     
     # Create a timestamp for unique identification
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1086,9 +1283,9 @@ def run_turing_experiment(a, b, c, d, Du, Dv, rho=0.01, grid_size=100, time_poin
     if experiment_name:
         # Clean up the name to be filesystem-friendly
         clean_name = experiment_name.replace(" ", "_").replace("/", "-").replace("\\", "-")
-        dir_name = f"{clean_name}_a{a}_b{b}_c{c}_d{d}_Du{Du}_Dv{Dv}_{timestamp}"
+        dir_name = f"{model_type}_{clean_name}_a{a}_b{b}_c{c}_d{d}_Du{Du}_Dv{Dv}_{timestamp}"
     else:
-        dir_name = f"a{a}_b{b}_c{c}_d{d}_Du{Du}_Dv{Dv}_{timestamp}"
+        dir_name = f"{model_type}_a{a}_b{b}_c{c}_d{d}_Du{Du}_Dv{Dv}_{timestamp}"
     
     dir_path = os.path.join(base_dir, dir_name)
     
@@ -1101,6 +1298,7 @@ def run_turing_experiment(a, b, c, d, Du, Dv, rho=0.01, grid_size=100, time_poin
     
     # Save experiment parameters to a JSON file for reference
     params_with_diffusion = {
+        'model_type': model_type,
         'a': a,
         'b': b,
         'c': c,
@@ -1108,6 +1306,8 @@ def run_turing_experiment(a, b, c, d, Du, Dv, rho=0.01, grid_size=100, time_poin
         'rho': rho,
         'Du': Du,
         'Dv': Dv,
+        'use_saturated': use_saturated,
+        'saturation': saturation if use_saturated else None,
         'grid_size': grid_size,
         'time_points': time_points,
         'dt': dt,
@@ -1120,8 +1320,10 @@ def run_turing_experiment(a, b, c, d, Du, Dv, rho=0.01, grid_size=100, time_poin
         import json
         json.dump(params_with_diffusion, f, indent=4)
     
-    # Initialize analyzer with local function definitions
-    analyzer = TuringAnalyzer((f_local, g_local), (Du, Dv), params)
+    print(f"Running {model_type} Gierer-Meinhardt experiment")
+    
+    # Initialize analyzer
+    analyzer = TuringAnalyzer((f_func, g_func), (Du, Dv), params)
     
     # Try multiple initial guesses to find steady state
     initial_guesses = [
@@ -1129,23 +1331,28 @@ def run_turing_experiment(a, b, c, d, Du, Dv, rho=0.01, grid_size=100, time_poin
         [0.5, 0.5],   # Lower guess
         [2.0, 2.0],   # Higher guess
         [0.2, 0.8],   # Asymmetric guess
-        [0.8, 0.2]    # Another asymmetric guess
+        [0.8, 0.2],   # Another asymmetric guess
+        [np.sqrt(a/b), a/(c*b)]  # Analytical guess for classic G-M
     ]
     
     # Try each initial guess until we get a valid result
     results = None
     steady_state = None
     
-    for guess in initial_guesses:
-        print(f"Trying with initial guess: {guess}")
-        results = analyzer.analyze_system(initial_guess=guess)
-        
-        if results['has_steady_state']:
-            steady_state = results['steady_state']
-            print(f"Found steady state: {steady_state}")
-            break
+    for i, guess in enumerate(initial_guesses):
+        print(f"Trying initial guess {i+1}/{len(initial_guesses)}: {guess}")
+        try:
+            results = analyzer.analyze_system(initial_guess=guess)
+            
+            if results['has_steady_state']:
+                steady_state = results['steady_state']
+                print(f"Found steady state: u₀={steady_state[0]:.4f}, v₀={steady_state[1]:.4f}")
+                break
+        except Exception as e:
+            print(f"  Failed with error: {str(e)}")
+            continue
     
-    if not results['has_steady_state']:
+    if not results or not results['has_steady_state']:
         print("Warning: Could not find steady state with any initial guess.")
         return dir_path, False
     
@@ -1158,6 +1365,7 @@ def run_turing_experiment(a, b, c, d, Du, Dv, rho=0.01, grid_size=100, time_poin
     # Plot dispersion relation and save
     dispersion_path = os.path.join(dir_path, "dispersion_relation.png")
     analyzer.plot_dispersion_relation(results, save_path=dispersion_path)
+    plt.close('all')  # Clean up matplotlib figures
     
     # Run simulation if not skipped
     if not no_simulation:
@@ -1182,14 +1390,18 @@ def run_turing_experiment(a, b, c, d, Du, Dv, rho=0.01, grid_size=100, time_poin
                 save_animation=True,
                 animation_path=animation_path
             )
+            plt.close('all')  # Clean up matplotlib figures
+            
         except Exception as e:
             print(f"Warning: Simulation failed with error: {str(e)}")
+            import traceback
+            traceback.print_exc()
             print("Continuing with analysis results only.")
     else:
         print("\nSkipping simulation as requested.")
     
     # Save key parameters to CSV file in the main directory
-    csv_path = os.path.join(base_dir, "turing_ideal_experiments.csv")
+    csv_path = os.path.join(base_dir, "turing_experiments.csv")
     is_new_file = not os.path.exists(csv_path)
     
     with open(csv_path, 'a', newline='') as f:
@@ -1198,16 +1410,18 @@ def run_turing_experiment(a, b, c, d, Du, Dv, rho=0.01, grid_size=100, time_poin
         # Write header if new file
         if is_new_file:
             writer.writerow([
-                'Experiment_Name', 'a', 'b', 'c', 'd', 'Du', 'Dv', 
-                'Turing_capable', 'Score', 
+                'Model_Type', 'Experiment_Name', 'a', 'b', 'c', 'd', 'Du', 'Dv', 
+                'Saturation', 'Turing_capable', 'Score', 
                 'Diffusion_ratio', 'Wavelength',
                 'Date', 'Directory'
             ])
         
         # Write data
         writer.writerow([
+            model_type,
             experiment_name or "Unnamed Experiment",
             a, b, c, d, Du, Dv,
+            saturation if use_saturated else 'N/A',
             'Yes' if results['is_turing_capable'] else 'No',
             f"{results['score']:.1f}",
             f"{results['diffusion_ratio']:.2f}",
@@ -1217,7 +1431,8 @@ def run_turing_experiment(a, b, c, d, Du, Dv, rho=0.01, grid_size=100, time_poin
         ])
     
     # Print success message
-    print(f"Experiment completed and saved to {dir_path}")
+    print(f"\nExperiment completed and saved to {dir_path}")
+    print(f"Model type: {model_type} Gierer-Meinhardt")
     print(f"Turing capable: {'YES' if results['is_turing_capable'] else 'NO'}")
     print(f"Score: {results['score']:.1f}/100")
     
@@ -1236,10 +1451,14 @@ def main():
     parser.add_argument('--Dv', type=float, default=1.0, help='Inhibitor diffusion coefficient')
     parser.add_argument('--rho', type=float, default=0.01, help='Basal activator production')
     
+    # Model type selection
+    parser.add_argument('--saturated', action='store_true', help='Use saturated G-M model (default: classic)')
+    parser.add_argument('--saturation', type=float, default=0.01, help='Saturation parameter for saturated model')
+    
     # Optional simulation parameters
     parser.add_argument('--grid_size', type=int, default=100, help='Number of grid points (default: 100)')
-    parser.add_argument('--time_points', type=int, default=20000, help='Number of simulation time steps (default: 2000)')
-    parser.add_argument('--dt', type=float, default=0.1, help='Time step size (default: 0.1)')
+    parser.add_argument('--time_points', type=int, default=20000, help='Number of simulation time steps (default: 20000)')
+    parser.add_argument('--dt', type=float, default=0.05, help='Time step size (default: 0.05)')
     parser.add_argument('--no_simulation', action='store_true', help='Skip simulation step (faster)')
     
     # Experiment naming
@@ -1251,23 +1470,30 @@ def main():
     args = parser.parse_args()
     
     if args.batch:
-        # Predefined parameter sets for batch mode
+        # Predefined parameter sets for batch mode - both classic and saturated
         parameter_sets = [
-            # name, a, b, c, d, Du, Dv, experiment_name
-            ("Classic Spots", 0.1, 1.0, 0.9, 0.9, 0.05, 1.0, "Classic_Spots_t20000"),
-            ("Fine Spots", 0.15, 1.0, 1.2, 1.0, 0.02, 0.8, "Fine_Spots_t20000"),
-            ("Stripes", 0.2, 0.8, 1.2, 0.8, 0.04, 0.6, "Stripes_t20000"),
-            ("Spots-to-Stripes", 0.18, 0.9, 1.0, 0.8, 0.03, 0.7, "Spots_to_Stripes_t20000"),
-            ("High Contrast", 0.08, 1.2, 1.5, 1.0, 0.01, 1.5, "High_Contrast_t20000"),
-            ("Non-Turing (Low Ratio)", 0.1, 1.0, 0.9, 0.9, 0.5, 1.0, "Non_Turing_Low_Ratio_t20000")
+            # Classic G-M parameters
+            ("Classic_Spots", 0.1, 1.0, 0.9, 0.9, 0.05, 1.0, False, 0.01, "Classic_Spots"),
+            ("Classic_Fine_Spots", 0.15, 1.0, 1.2, 1.0, 0.02, 0.8, False, 0.01, "Classic_Fine_Spots"),
+            ("Classic_Stripes", 0.2, 0.8, 1.2, 0.8, 0.04, 0.6, False, 0.01, "Classic_Stripes"),
+            ("Classic_High_Contrast", 0.08, 1.2, 1.5, 1.0, 0.01, 1.5, False, 0.01, "Classic_High_Contrast"),
+            
+            # Saturated G-M parameters
+            ("Saturated_Spots", 0.1, 1.0, 0.9, 0.9, 0.05, 1.0, True, 0.01, "Saturated_Spots"),
+            ("Saturated_Strong_Saturation", 0.1, 1.0, 0.9, 0.9, 0.05, 1.0, True, 0.1, "Saturated_Strong_Saturation"),
+            ("Saturated_Weak_Saturation", 0.1, 1.0, 0.9, 0.9, 0.05, 1.0, True, 0.001, "Saturated_Weak_Saturation"),
         ]
         
         print(f"Running in batch mode with {len(parameter_sets)} parameter sets")
         
         for i, params in enumerate(parameter_sets):
-            name, a, b, c, d, Du, Dv, experiment_name = params
+            name, a, b, c, d, Du, Dv, use_saturated, saturation, experiment_name = params
             print(f"\n[{i+1}/{len(parameter_sets)}] Running '{name}' parameter set")
+            model_str = "Saturated" if use_saturated else "Classic" 
+            print(f"Model: {model_str} G-M")
             print(f"Parameters: a={a}, b={b}, c={c}, d={d}, Du={Du}, Dv={Dv}")
+            if use_saturated:
+                print(f"Saturation: {saturation}")
             
             # Run the experiment
             dir_path, is_turing_capable = run_turing_experiment(
@@ -1276,19 +1502,24 @@ def main():
                 time_points=args.time_points,
                 dt=args.dt,
                 no_simulation=args.no_simulation,
-                experiment_name=experiment_name
+                experiment_name=experiment_name,
+                use_saturated=use_saturated,
+                saturation=saturation
             )
             
             print(f"Completed '{name}'. Results saved to {dir_path}")
             print(f"Turing capable: {'YES' if is_turing_capable else 'NO'}")
         
         print("\nBatch processing complete!")
-        print(f"Results saved to turing_ideal_experiments/ directory")
-        print(f"Summary CSV file: turing_ideal_experiments/turing_ideal_experiments.csv")
+        print(f"Results saved to turing_experiments/ directory")
+        print(f"Summary CSV file: turing_experiments/turing_experiments.csv")
     
     else:
-        print(f"Running Turing pattern experiment with parameters:")
+        model_str = "Saturated" if args.saturated else "Classic"
+        print(f"Running {model_str} Gierer-Meinhardt experiment with parameters:")
         print(f"a={args.a}, b={args.b}, c={args.c}, d={args.d}, Du={args.Du}, Dv={args.Dv}, rho={args.rho}")
+        if args.saturated:
+            print(f"Saturation parameter: {args.saturation}")
         print(f"Simulation settings: grid_size={args.grid_size}, time_points={args.time_points}, dt={args.dt}")
         
         if args.name:
@@ -1304,13 +1535,16 @@ def main():
             time_points=args.time_points,
             dt=args.dt,
             no_simulation=args.no_simulation,
-            experiment_name=args.name
+            experiment_name=args.name,
+            use_saturated=args.saturated,
+            saturation=args.saturation
         )
         
-        print(f"Experiment completed. Results saved to {dir_path}")
+        print(f"\nExperiment completed. Results saved to {dir_path}")
         print(f"Turing capable: {'YES' if is_turing_capable else 'NO'}")
-        print(f"Check the CSV file at turing_ideal_experiments/turing_ideal_experiments.csv for a summary of all experiments.")
-
+        print(f"Check the CSV file at turing_experiments/turing_experiments.csv for a summary of all experiments.")
 
 if __name__ == "__main__":
     main()
+
+    
