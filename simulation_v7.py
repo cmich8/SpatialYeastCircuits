@@ -1547,3 +1547,185 @@ def plot_molecule_concentrations(results, molecules=None):
     plt.tight_layout()
     return fig
 
+def plot_molecule_timecourse(results, model, molecules=None, figsize=(12, 8), 
+                            title=None, save_path=None, show_average=True,
+                            colony_locations=None, specific_locations=None,
+                            line_styles=None, colors=None, markers=None):
+    """
+    Plot the time course of molecule concentration(s) at colony locations and/or specific locations.
+    Works similarly to plot_strain_growth by automatically tracking concentrations at colony centers.
+    
+    Args:
+        results: Simulation results from the simulate method
+        model: The SpatialMultiStrainModel instance (to get colony information)
+        molecules: Single molecule name or list of molecule names to plot
+                  If None, plots all available molecules
+        figsize: Figure size (width, height) in inches
+        title: Custom title for the plot (if None, auto-generated)
+        save_path: Path to save the figure (if None, figure is not saved)
+        show_average: Whether to also plot the spatial average for each molecule
+        colony_locations: List of colony positions to track (if None, extracts from model)
+        specific_locations: Additional specific locations to track as tuples [(row, col), ...]
+        line_styles: List of line styles for different locations (optional)
+        colors: List of colors for different molecules (optional)
+        markers: List of markers for different locations (optional)
+        
+    Returns:
+        matplotlib figure instance
+    """
+    # Handle molecule input - make it a list
+    if molecules is None:
+        molecules = list(results['molecule_grids'].keys())
+    elif isinstance(molecules, str) or not hasattr(molecules, '__iter__'):
+        molecules = [molecules]
+    
+    # Ensure all molecules are strings
+    molecules = [str(mol) if not isinstance(mol, str) else mol for mol in molecules]
+    
+    # Validate molecules exist in results
+    available_molecules = list(results['molecule_grids'].keys())
+    for molecule in molecules:
+        if molecule not in available_molecules:
+            raise ValueError(f"Molecule '{molecule}' not found in results. Available: {available_molecules}")
+    
+    # Get colony locations if not provided
+    if colony_locations is None:
+        colony_locations = []
+        # Try to extract colony positions from the model's strain grids
+        for strain_idx, strain_grid in enumerate(model.strain_grids):
+            # Find the center of mass of each colony
+            if np.sum(strain_grid) > 0:
+                # Find non-zero locations
+                rows, cols = np.where(strain_grid > 0)
+                if len(rows) > 0:
+                    # Calculate center of mass
+                    center_row = int(np.mean(rows))
+                    center_col = int(np.mean(cols))
+                    strain_id = model.strains[strain_idx].strain_id
+                    colony_locations.append({
+                        'position': (center_row, center_col),
+                        'strain_id': strain_id,
+                        'strain_idx': strain_idx
+                    })
+    
+    # Combine colony locations with specific locations
+    all_locations = []
+    location_labels = []
+    
+    # Add colony locations
+    for colony in colony_locations:
+        if isinstance(colony, dict):
+            position = colony['position']
+            label = f"Colony {colony.get('strain_id', colony.get('strain_idx', '?'))}"
+        else:
+            position = colony
+            label = f"Colony at {position}"
+        all_locations.append(position)
+        location_labels.append(label)
+    
+    # Add specific locations
+    if specific_locations:
+        for i, location in enumerate(specific_locations):
+            all_locations.append(location)
+            location_labels.append(f"Location {location}")
+    
+    # Get time points
+    t = results['t']
+    
+    # Validate locations are within grid bounds
+    if len(results['molecule_grids'][molecules[0]]) > 0:
+        grid_shape = results['molecule_grids'][molecules[0]][0].shape
+        valid_locations = []
+        valid_labels = []
+        for i, (row, col) in enumerate(all_locations):
+            if 0 <= row < grid_shape[0] and 0 <= col < grid_shape[1]:
+                valid_locations.append((row, col))
+                valid_labels.append(location_labels[i])
+            else:
+                print(f"Warning: Location ({row}, {col}) is outside grid bounds {grid_shape}")
+        all_locations = valid_locations
+        location_labels = valid_labels
+    
+    # Create figure
+    fig, ax = plt.subplots(figsize=figsize)
+    
+    # Set up default styling
+    if colors is None:
+        colors = plt.cm.tab10.colors
+    if line_styles is None:
+        line_styles = ['-', '--', '-.', ':', '-'] * 10
+    if markers is None:
+        markers = ['o', 's', '^', 'd', 'x', '+', '*', 'v', '<', '>'] * 10
+    
+    # Plot each molecule
+    for mol_idx, molecule in enumerate(molecules):
+        molecule_grids = results['molecule_grids'][molecule]
+        mol_color = colors[mol_idx % len(colors)]
+        
+        # Plot spatial average if requested and we have multiple molecules
+        if show_average:
+            avg_concentrations = [np.mean(grid) for grid in molecule_grids]
+            ax.plot(t, avg_concentrations, 
+                    label=f"{molecule} (Spatial Avg)", 
+                    color=mol_color,
+                    linestyle='-', 
+                    linewidth=3,
+                    alpha=0.6)
+        
+        # Plot at each location
+        for loc_idx, (row, col) in enumerate(all_locations):
+            # Extract concentration at this location over time
+            concentrations = [grid[row, col] for grid in molecule_grids]
+            
+            # Use different line styles for different locations, same color for same molecule
+            linestyle = line_styles[loc_idx % len(line_styles)]
+            marker = markers[loc_idx % len(markers)]
+            
+            # Create label
+            if len(molecules) > 1:
+                label = f"{molecule} at {location_labels[loc_idx]}"
+            else:
+                label = location_labels[loc_idx]
+            
+            ax.plot(t, concentrations, 
+                    label=label, 
+                    color=mol_color,
+                    linestyle=linestyle, 
+                    marker=marker, 
+                    markersize=5,
+                    markevery=max(1, len(t)//10),  # Show marker every few points
+                    linewidth=2,
+                    alpha=0.8)
+    
+    # Customize plot
+    ax.grid(True, alpha=0.3)
+    ax.set_xlabel('Time (hours)', fontsize=12)
+    
+    if len(molecules) == 1:
+        ax.set_ylabel(f'{molecules[0]} Concentration', fontsize=12)
+    else:
+        ax.set_ylabel('Concentration', fontsize=12)
+    
+    # Set title
+    if title is None:
+        if len(molecules) == 1:
+            title = f'{molecules[0]} Concentration at Colony Locations Over Time'
+        else:
+            title = f'Multiple Molecule Concentrations at Colony Locations Over Time'
+    ax.set_title(title, fontsize=14)
+    
+    # Add legend with reasonable number of columns
+    n_items = len(molecules) * (len(all_locations) + (1 if show_average else 0))
+    n_cols = max(1, min(3, n_items // 6 + 1))
+    ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), ncol=n_cols)
+    
+    # Adjust layout to make room for the legend
+    plt.tight_layout()
+    plt.subplots_adjust(right=0.75)
+    
+    # Save if requested
+    if save_path:
+        fig.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"Figure saved to: {save_path}")
+    
+    return fig
